@@ -95,28 +95,24 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 🎯 核心修正：加入進階影像預處理，強化 Tesseract 的辨識率
+# 🎯 核心辨識：專注抓取月份、日期與班別
 def extract_dates_and_shifts(_img_np):
     try:
         import pytesseract
         
-        # 1. 轉為灰階圖
+        # 1. 轉為灰階圖並放大提高解析度
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
-        
-        # 2. 放大圖片提高解析度 (增加文字邊緣細節)
         gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
         
-        # 3. 自適應二值化 (將陰影、反光濾除，文字變極度清晰純黑白)
+        # 2. 自適應二值化 (去除陰影)
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C_,\
                                        cv2.THRESH_BINARY, 11, 2)
         
-        # 4. 將預處理後的影像轉回 PIL 格式
+        # 3. 執行辨識
         pil_img = Image.fromarray(thresh)
-        
-        # 5. 執行 OCR 辨識
         raw_text = pytesseract.image_to_string(pil_img, lang='chi_tra+eng')
         
-        # 建立嚴格匹配 月份/日期 的正規表示式
+        # 4. 正規表示式匹配 月份/日期
         pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
         
         matched_lines = []
@@ -128,41 +124,9 @@ def extract_dates_and_shifts(_img_np):
         
         if matched_lines:
             return "\n".join(matched_lines)
-        return None
+        return ""
     except Exception:
-        return None
-
-# 預設基準完整班表範本 (當紙本真的過於模糊或翻拍導致嚴重失真時，提供快速核對基底)
-backup_template = """4/21：B
-4/22：代A
-4/23：代A
-4/24：H
-4/25：B
-4/26：O
-4/27：H
-4/28：B
-4/29：B
-4/30：H
-5/01：C
-5/02：C
-5/03：O
-5/04：代A
-5/05：代公A
-5/06：代公A
-5/07：代公A
-5/08：代A
-5/09：A
-5/10：H
-5/11：O
-5/12：代A
-5/13：C
-5/14：C
-5/15：C
-5/16：C
-5/17：O
-5/18：B
-5/19：B
-5/20：H"""
+        return ""
 
 extracted_text = ""
 if opencv_image is not None:
@@ -170,20 +134,20 @@ if opencv_image is not None:
         ocr_extracted = extract_dates_and_shifts(opencv_image)
         if ocr_extracted:
             extracted_text = ocr_extracted
-            st.success("✨ 系統已透過影像優化演算法，成功自動抓取圖檔日期！")
+            st.success("✨ 系統已成功自動抓取圖檔日期！")
         else:
-            extracted_text = backup_template
-            st.info("💡 提示：已啟動智慧防呆機制為您載入標準班表列，您可直接在下方欄位快速校對。")
+            extracted_text = ""
+            st.warning("⚠️ 未能自動辨識出符合格式的日期。請檢查上方圖片方向是否正確，或在下方直接手動貼入/編輯文字。")
 else:
-    extracted_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
+    extracted_text = ""
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`5/01：C`）")
-user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250)
+st.caption("請檢查或在此處貼入班表文字，格式請維持『月份/日期：班別』（例如：`5/01：C`）")
+user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250, placeholder="範例格式：\n4/21：B\n4/22：代A\n5/01：C")
 
-# 在步驟2和步驟3之間新增的確認按鈕
+# 在步驟2和步驟3之間的新增確認按鈕
 col_btn1, col_btn2 = st.columns([2, 1])
 with col_btn1:
     if st.button("👉 確認上方班表內容無誤，進行下一步驟", type="primary"):
@@ -281,23 +245,28 @@ def draw_calendar_image(schedule_data, year):
 
 # 6. 🔓 步驟三：行事曆生成與圖檔下載
 if st.session_state.step2_confirmed:
-    if user_input and user_input != "【請先在上方導入照片，或在此處直接貼入純文字班表】":
+    if user_input.strip():
         try:
             parsed_data, year_val = parse_schedule(user_input)
-            st.markdown("---")
-            st.subheader("🖼️ 步驟三：行行事曆生成與圖檔下載")
-            
-            generated_img = draw_calendar_image(parsed_data, year_val)
-            img_buffer = io.BytesIO()
-            generated_img.save(img_buffer, format="PNG")
-            img_bytes = img_buffer.getvalue()
-            
-            st.image(img_bytes, caption="這是依據您確認後的內容所生成的最終平板風格排班圖", use_container_width=True)
-            st.download_button(
-                label="📥 點此下載排班月行事曆 PNG 圖檔",
-                data=img_bytes,
-                file_name=f"排班行事曆_{year_val}年.png",
-                mime="image/png"
-            )
+            if parsed_data:
+                st.markdown("---")
+                st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
+                
+                generated_img = draw_calendar_image(parsed_data, year_val)
+                img_buffer = io.BytesIO()
+                generated_img.save(img_buffer, format="PNG")
+                img_bytes = img_buffer.getvalue()
+                
+                st.image(img_bytes, caption="這是依據您確認後的內容所生成的最終平板風格排班圖", use_container_width=True)
+                st.download_button(
+                    label="📥 點此下載排班月行事曆 PNG 圖檔",
+                    data=img_bytes,
+                    file_name=f"排班行事曆_{year_val}年.png",
+                    mime="image/png"
+                )
+            else:
+                st.error("輸入的內容無法被正確解析為日期格式，請確認是否有包含格式如 '4/21'。")
         except Exception as e:
             st.error(f"行事曆生成失敗: {e}")
+    else:
+        st.warning("請先在步驟二的核對欄內輸入或貼入您的排班資料。")
