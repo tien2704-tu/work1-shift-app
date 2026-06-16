@@ -3,12 +3,22 @@ import streamlit as st
 import datetime
 import re
 import calendar
+import cv2
+import numpy as np
+from PIL import Image
+
+# 延遲載入 easyocr 以優化網頁載入速度
+@st.cache_resource
+def load_ocr_reader():
+    import easyocr
+    # 設定支援繁體中文 (ch_tra) 與英文 (en)
+    return easyocr.Reader(['ch_tra', 'en'], gpu=False)
 
 # 1. 網頁基礎設定
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("您可以透過【上傳檔案】或【手機現場拍照】導入最新班表，並於下方進行確認與下載。")
+st.write("您可以透過【上傳檔案】或【手機現場拍照】導入最新班表，系統將自動進行光學辨識 (OCR)。")
 
 # 2. 側邊欄：設定班別與時間對照
 st.sidebar.header("⚙️ 班別時間配置")
@@ -20,55 +30,75 @@ time_C = st.sidebar.text_input("夜班 / 大夜班 (C)", "00:00 - 08:00")
 st.subheader("📸 步驟一：導入班表照片 / 圖檔")
 upload_tab, camera_tab = st.tabs(["📁 上傳班表圖檔", "📷 手機拍照導入"])
 
+img_file = None
+
 with upload_tab:
     uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
     if uploaded_file:
+        img_file = uploaded_file
         st.image(uploaded_file, caption="已成功上傳的班表照片", use_container_width=True)
 
 with camera_tab:
     camera_file = st.camera_input("請對準紙本班表進行拍照：")
+    if camera_file:
+        img_file = camera_file
 
-# 💡 預填預設文字
-if uploaded_file or camera_file:
-    st.success("✨ 照片導入成功！系統已自動為您檢索『遠東新世紀化驗科 ─ 凃牧廷』的排班區間。")
-    default_text = """【4月份區間】
-4/21 (二)：B
-4/22 (三)：O
-4/23 (四)：代A
-4/24 (五)：代A
-4/25 (六)：H
-4/26 (日)：B
-4/27 (一)：O
-4/28 (二)：H
-4/29 (三)：C
-4/30 (四)：C
-【5月份區間】
-5/01 (五)：C
-5/02 (六)：C
-5/03 (日)：C
-5/04 (一)：O
-5/05 (二)：代A
-5/06 (三)：代公A
-5/07 (四)：代公A
-5/08 (五)：代公A
-5/09 (六)：A
-5/10 (日)：A
-5/11 (一)：H
-5/12 (二)：O
-5/13 (三)：代A
-5/14 (四)：C
-5/15 (五)：C
-5/16 (六)：C
-5/17 (日)：C
-5/18 (一)：S
-5/19 (二)：O
-5/20 (三)：O"""
+# 初始化辨識出來的文字
+extracted_text = ""
+
+# 當有圖片輸入時，啟動真實 OCR 辨識
+if img_file is not None:
+    with st.spinner("🔍 系統正在極速辨識圖檔中的排班文字，請稍候..."):
+        try:
+            # 將上傳的檔案轉換為 OpenCV 影像格式
+            file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+            opencv_image = cv2.imdecode(file_bytes, 1)
+            
+            # 讀取 OCR 模型
+            reader = load_ocr_reader()
+            
+            # 進行文字識別
+            ocr_results = reader.readtext(opencv_image)
+            
+            # 整理辨識出來的每行文字
+            lines_dict = {}
+            for (bbox, text, prob) in ocr_results:
+                if prob > 0.2:  # 過濾掉信心度過低的雜訊
+                    # 使用 y 座標進行基礎的分行排序
+                    y_center = int((bbox[0][1] + bbox[2][1]) / 2)
+                    # 容許上下 15 像素內的文字視為同一行
+                    matched_row = None
+                    for r_y in lines_dict.keys():
+                        if abs(r_y - y_center) < 15:
+                            matched_row = r_y
+                            break
+                    if matched_row is not None:
+                        lines_dict[matched_row].append((bbox[0][0], text))
+                    else:
+                        lines_dict[y_center] = [(bbox[0][0], text)]
+            
+            # 根據座標從上到下、從左到右重組文字
+            sorted_lines = []
+            for r_y in sorted(lines_dict.keys()):
+                # 同一行內依照 x 座標從左到右排序
+                sorted_words = sorted(lines_dict[r_y], key=lambda x: x[0])
+                line_text = " ".join([w[1] for w in sorted_words])
+                sorted_lines.append(line_text)
+            
+            extracted_text = "\n".join(sorted_lines)
+            st.success("✨ 圖檔字元識別完成！請在下方檢查並修正內容。")
+            
+        except Exception as ocr_err:
+            st.error(f"OCR 辨識模組初始化失敗，已自動切換回預設範本。錯誤訊息: {ocr_err}")
+            # 防呆機制：若環境缺少套件，自動代入歷史預設範本
+            extracted_text = """4/21：B\n4/22：O\n4/23：代A\n4/24：代A\n4/25：H\n4/26：B\n4/27：O\n4/28：H\n4/29：C\n4/30：C\n5/01：C\n5/02：C\n5/03：C\n5/04：O\n5/05：代A\n5/06：代公A\n5/07：代公A\n5/08：代公A\n5/09：A\n5/10：A\n5/11：H\n5/12：O\n5/13：代A\n5/14：C\n5/15：C\n5/16：C\n5/17：C\n5/18：S\n5/19：O\n5/20：O"""
 else:
-    default_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
+    extracted_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-user_input = st.text_area("您可以在下方直接修改辨識錯字（每行格式請維持 4/21：B）：", value=default_text, height=280)
+st.info("💡 貼心提示：OCR 辨識率受照片清晰度影響。若格式有歪斜，請手動調整為「月份/日期：班別代號」（例如：`4/21：B`），下方的行事曆就會同步更新！")
+user_input = st.text_area("OCR 提取出的原始純文字如下：", value=extracted_text, height=280)
 
 # 5. 核心解析邏輯 (一格內上到下)
 def parse_schedule(text):
@@ -77,21 +107,16 @@ def parse_schedule(text):
     current_year = 2026  # 年度設定
     
     for line in lines:
-        match = re.match(r'(\d+)/(\d+).*?[:：]\s*(.*)', line)
+        # 相容多種格式：支援 4/21:B、4/21(二):B、4/21 B
+        match = re.search(r'(\d+)/(\d+).*?[:：\s]\s*([A-Za-z0-9\u4e00-\u9fa5]+)', line)
         if match:
             month = int(match.group(1))
             day = int(match.group(2))
-            raw_shifts = match.group(3).strip().split()
-            
-            if not raw_shifts:
-                continue
-                
-            # 一格內由上到下，取最後一個有效代號
-            final_shift = raw_shifts[-1]
+            shift_type = match.group(3).strip()
             
             if month not in schedule_data:
                 schedule_data[month] = {}
-            schedule_data[month][day] = final_shift
+            schedule_data[month][day] = shift_type
             
     return schedule_data, current_year
 
