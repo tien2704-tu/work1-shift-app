@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import io
 
-# 載入 OCR 辨識模型（設定快取避免重複載入變慢）
+# 載入 OCR 辨識模型（設定快取避免重複載入變慢） 
 @st.cache_resource
 def load_ocr_reader():
     import easyocr
