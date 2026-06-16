@@ -36,23 +36,65 @@ with upload_tab:
     uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
     if uploaded_file:
         img_file = uploaded_file
-        st.image(uploaded_file, caption="已成功上傳的班表照片", use_container_width=True)
 
 with camera_tab:
     camera_file = st.camera_input("請對準紙本班表進行拍照：")
     if camera_file:
         img_file = camera_file
 
+# 初始化 Session State 用來記錄圖片的旋轉角度 (0, 90, 180, 270)
+if 'rotation_angle' not in st.session_state:
+    st.session_state.rotation_angle = 0
+
+# 如果換了新上傳的檔案，自動重置旋轉角度
+if 'last_img_name' not in st.session_state:
+    st.session_state.last_img_name = None
+
+if img_file is not None and img_file.name != st.session_state.last_img_name:
+    st.session_state.rotation_angle = 0
+    st.session_state.last_img_name = img_file.name
+
+# 處理圖片旋轉與辨識邏輯
+opencv_image = None
+if img_file is not None:
+    # 讀取原始圖片
+    file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+    opencv_image = cv2.imdecode(file_bytes, 1)
+    
+    # 🔄 新增旋轉控制按鈕區
+    st.markdown("##### 🔄 圖檔方向調整")
+    col_rot1, col_rot2, col_rot3 = st.columns([1, 1, 2])
+    with col_rot1:
+        if st.button("↩️ 逆時針轉 90°"):
+            st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
+            st.rerun()
+    with col_rot2:
+        if st.button("↪️ 順時針轉 90°"):
+            st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
+            st.rerun()
+    with col_rot3:
+        if st.session_state.rotation_angle != 0:
+            st.caption(f"目前已旋轉：`{st.session_state.rotation_angle}°`")
+
+    # 依據角度動態旋轉 OpenCV 影像
+    if st.session_state.rotation_angle == 90:
+        opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_90_CLOCKWISE)
+    elif st.session_state.rotation_angle == 180:
+        opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_180)
+    elif st.session_state.rotation_angle == 270:
+        opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    # 顯示旋轉後的預覽圖片
+    preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
+    st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
+
 # 初始化辨識文字
 extracted_text = ""
 
-# 當有圖片輸入時，啟動真實 OCR 辨識
-if img_file is not None:
-    with st.spinner("🔍 系統正在極速辨識圖檔中的排班文字，請稍候..."):
+# 當有圖片輸入時，啟動真實 OCR 辨識 (使用轉正後的 opencv_image)
+if opencv_image is not None:
+    with st.spinner("🔍 系統正在依據目前方向，極速辨識圖檔文字中..."):
         try:
-            file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
-            opencv_image = cv2.imdecode(file_bytes, 1)
-            
             reader = load_ocr_reader()
             ocr_results = reader.readtext(opencv_image)
             
@@ -108,13 +150,11 @@ def parse_schedule(text):
             
     return schedule_data, current_year
 
-# 5. 🎨 核心：Python 後端高畫質圖片生成器 (取代不穩定的前端截圖)
+# 5. 🎨 核心：Python 後端高畫質圖片生成器
 def draw_calendar_image(schedule_data, year):
-    # 建立一個 600 x 850 的畫布 (高解析度白底)
     img = Image.new("RGB", (600, 850), "#FFFFFF")
     draw = ImageDraw.Draw(img)
     
-    # 使用系統預設字型 (防止部署到 Linux 伺服器時找不到字型崩潰)
     try:
         font_title = ImageFont.truetype("Arial.ttf", 20)
         font_subtitle = ImageFont.truetype("Arial.ttf", 16)
@@ -122,25 +162,21 @@ def draw_calendar_image(schedule_data, year):
     except IOError:
         font_title = font_subtitle = font_text = ImageFont.load_default()
 
-    # 繪製標頭與外框花框
     draw.rectangle([(20, 20), (580, 830)], outline="#E0E0E0", width=2)
     draw.text((40, 40), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
     draw.text((40, 70), "技術處化驗科 ─ 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
-    # 繪製資訊說明欄背景
     draw.rectangle([(40, 105), (560, 155)], fill="#F5f5F7")
     draw.text((50, 115), f"A: 早班 ({time_A})  |  B: 中班 ({time_B})", fill="#1D1D1F", font=font_text)
     draw.text((50, 135), f"C: 夜班 ({time_C})  |  H/O/S/代班: 休假", fill="#1D1D1F", font=font_text)
 
     y_offset = 180
     
-    # 遍歷月份進行繪製
     for month in sorted(schedule_data.keys()):
         draw.rectangle([(40, y_offset), (560, y_offset + 25)], fill="#E8E8ED")
         draw.text((50, y_offset + 5), f"{year}年 {month:02d}月", fill="#1D1D1F", font=font_subtitle)
         y_offset += 35
         
-        # 畫星期表頭
         weeks = ['日', '一', '二', '三', '四', '五', '六']
         for i, wk in enumerate(weeks):
             draw.text((45 + i*72, y_offset), wk, fill="#86868B", font=font_text)
@@ -153,7 +189,6 @@ def draw_calendar_image(schedule_data, year):
         current_cell = blank_cells
         x_start = 40
         
-        # 繪製日期方格
         for day in range(1, total_days + 1):
             col = current_cell % 7
             row = current_cell // 7
@@ -163,14 +198,11 @@ def draw_calendar_image(schedule_data, year):
             box_x2 = box_x1 + 68
             box_y2 = box_y1 + 50
             
-            # 預設方格背景
             draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill="#F5F5F7")
             draw.text((box_x1 + 5, box_y1 + 5), str(day), fill="#1D1D1F", font=font_text)
             
-            # 填入排班代號
             if day in schedule_data[month]:
                 shift = schedule_data[month][day]
-                # 簡單區分顏色區塊
                 bg_color = "#FFE082" if shift == 'A' else ("#B3E5FC" if shift == 'B' else ("#C8E6C9" if shift == 'C' else "#E0E0E0"))
                 draw.rectangle([(box_x1 + 5, box_y1 + 22), (box_x2 - 5, box_y2 - 5)], fill=bg_color)
                 draw.text((box_x1 + 12, box_y1 + 26), shift, fill="#1D1D1F", font=font_text)
@@ -189,18 +221,14 @@ if user_input and user_input != "【請先在上方導入照片，或在此處�
         
         st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
         
-        # 在後端直接繪製圖檔
         generated_img = draw_calendar_image(parsed_data, year_val)
         
-        # 轉成 bytes 供 Streamlit 網頁顯示與下載
         img_buffer = io.BytesIO()
         generated_img.save(img_buffer, format="PNG")
         img_bytes = img_buffer.getvalue()
         
-        # 1. 在網頁上呈現渲染好的精美圖檔預覽
         st.image(img_bytes, caption="這是系統即將為您導出的最終平板風格排班圖", use_container_width=True)
         
-        # 2. 產出真正的「下載圖檔功能」按鈕！點擊即可保存到手機或電腦
         st.download_button(
             label="📥 點此下載排班月行事曆 PNG 圖檔",
             data=img_bytes,
