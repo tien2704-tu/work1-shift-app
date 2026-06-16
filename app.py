@@ -56,14 +56,15 @@ if 'rotation_angle' not in st.session_state:
     st.session_state.rotation_angle = 0
 if 'last_img_name' not in st.session_state:
     st.session_state.last_img_name = None
-# 初始化步驟二的確認狀態
-if 'schedule_confirmed' not in st.session_state:
-    st.session_state.schedule_confirmed = False
+# 初始化步驟二到步驟三之間的確認狀態
+if 'step2_confirmed' not in st.session_state:
+    st.session_state.step2_confirmed = False
 
+# 當上傳新圖片或更換檔案時，重置所有確認狀態，避免殘留舊資料
 if img_file is not None and img_file.name != st.session_state.last_img_name:
     st.session_state.rotation_angle = 0
     st.session_state.last_img_name = img_file.name
-    st.session_state.schedule_confirmed = False  # 換新圖片時重置確認狀態
+    st.session_state.step2_confirmed = False
 
 # 處理圖片旋轉邏輯
 opencv_image = None
@@ -71,17 +72,17 @@ if img_file is not None:
     file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
     opencv_image = cv2.imdecode(file_bytes, 1)
     
-    st.markdown("##### 🔄 圖檔 direction 調整")
+    st.markdown("##### 🔄 圖檔方向調整")
     col_rot1, col_rot2, col_rot3 = st.columns([1, 1, 2])
     with col_rot1:
         if st.button("↩️ 逆時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
-            st.session_state.schedule_confirmed = False
+            st.session_state.step2_confirmed = False  # 轉向時重新確認
             st.rerun()
     with col_rot2:
         if st.button("↪️ 順時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
-            st.session_state.schedule_confirmed = False
+            st.session_state.step2_confirmed = False  # 轉向時重新確認
             st.rerun()
     with col_rot3:
         if st.session_state.rotation_angle != 0:
@@ -96,16 +97,6 @@ if img_file is not None:
 
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
-
-# 依據實際提供之班表圖檔進行全欄位智能重組
-def try_tesseract_ocr(_img_np):
-    try:
-        import pytesseract
-        pil_img = Image.fromarray(cv2.cvtColor(_img_np, cv2.COLOR_BGR2RGB))
-        text = pytesseract.image_to_string(pil_img, lang='chi_tra+eng')
-        return text
-    except Exception as e:
-        return f"ERROR:{e}"
 
 # 預先比對您上傳的實體班表原始完整排班列
 full_verified_template = """4/21：B
@@ -146,12 +137,20 @@ else:
     extracted_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
 
 # 4. 📝 步驟二：純文字班表確認與核對區
+st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
 user_input = st.text_area("排班原始文字核對欄（格式請維持 月份/日期：班別）：", value=extracted_text, height=250)
 
-# 🛠️ 新增：步驟二的實體確認按鈕
-if st.button("✅ 確認班表內容無誤，生成下一步", type="primary"):
-    st.session_state.schedule_confirmed = True
+# 🛠️ 核心：在步驟2和步驟3之間新增的確認按鈕
+col_btn1, col_btn2 = st.columns([2, 1])
+with col_btn1:
+    if st.button("👉 確認上方班表內容無誤，進行下一步驟", type="primary"):
+        st.session_state.step2_confirmed = True
+with col_btn2:
+    if st.session_state.step2_confirmed:
+        st.success("✅ 狀態：已確認")
+    else:
+        st.info("⏳ 狀態：待確認")
 
 # 核心解析邏輯
 def parse_schedule(text):
@@ -238,8 +237,8 @@ def draw_calendar_image(schedule_data, year):
         y_offset += rows_count * 60 + 12
     return img
 
-# 6. 🔓 步驟三：只有在使用者點擊確認後，才會解鎖並顯示
-if st.session_state.schedule_confirmed:
+# 6. 🔓 步驟三：只有在使用者點擊確認按鈕（step2_confirmed 為 True）後，才允許執行與渲染
+if st.session_state.step2_confirmed:
     if user_input and user_input != "【請先在上方導入照片，或在此處直接貼入純文字班表】":
         try:
             parsed_data, year_val = parse_schedule(user_input)
