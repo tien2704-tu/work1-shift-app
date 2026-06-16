@@ -1,4 +1,5 @@
 Python
+# -*- coding: utf-8 -*-
 import streamlit as st
 import datetime
 import re
@@ -28,9 +29,9 @@ with upload_tab:
 with camera_tab:
     camera_file = st.camera_input("請對準紙本班表進行拍照：")
 
-# 💡 預填預設文字（當有圖片導入或全新空白時的處理）
+# 💡 預填預設文字（修正第 33 行的 Unicode 編碼錯誤）
 if uploaded_file or camera_file:
-    st.success("✨ 照片導入成功！系統已自動為您檢索『\u6d涂\u7267\u5ef7』的排班區間。")
+    st.success("✨ 照片導入成功！系統已自動為您檢索『凃牧廷』的排班區間。")
     default_text = """【4月份區間】
 4/21 (二)：B
 4/22 (三)：O
@@ -192,7 +193,7 @@ def generate_html_with_download(schedule_data, year):
             useCORS: true
         }).then(canvas => {
             const link = document.createElement('a');
-            link.download = '凃牧廷_2026個人班表行事曆.png';
+            link.download = '凃牧廷_2026個人排班行事曆.png';
             link.href = canvas.toDataURL('image/png');
             link.click();
         });
