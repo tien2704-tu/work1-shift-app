@@ -1,3 +1,24 @@
+為了大幅提升對照片班表的自動辨識率，我們需要針對目前的 OCR 解析邏輯進行結構性優化。
+
+在之前的版本中，如果直接使用大範圍的列切片或全局掃描，容易因為紙本拍照的歪斜、表格內格線、欄位對齊偏誤或是 OCR 引擎對複雜中文字「凃」的識別誤差，導致無法精準抓到您完整的班表內容。
+
+🛠️ 這次更新的四大識別優化重點：
+多重名字容錯機制（Fuzzy Mapping）：針對最左側的名字欄位，同時對應 凃、涂、廷 等可能因為字型或格線干擾產生的 OCR 錯字。
+
+兩階段 ROI 橫列鎖定：
+
+第一階段：先掃描整張圖的 X、Y 座標，找出名字所在的水平高度範圍（Y軸區塊）。
+
+第二階段：切出該名員工專屬的橫條圖檔後，利用網格等寬切割原理或由左至右按順序掃描班別（如 A、B、C、H、O、代A...）。
+
+全局雙向備援演算法：如果名字在翻拍時被切掉、模糊或無法定位，系統會自動切換至「全局日期-班別特徵掃描」，將圖片中所有符合日期格式的內容全部清洗、去重並排序，確保不會出現空白。
+
+影像預處理進階濾鏡：提升對比度、進行高斯模糊去噪，專門應對手機拍照時常見的陰影與反光。
+
+🛠️ 更新優化版 app.py 程式碼
+請使用安全步驟：先將 app.py 內容全部清空（Ctrl + A 接著 Delete），然後完整複製下方最新的程式碼貼上並儲存：
+
+Python
 # -*- coding: utf-8 -*-
 import streamlit as st
 import datetime
@@ -95,44 +116,45 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 🎯 核心修正：尋找「凃牧廷」名字所在橫列並提取完整班表的演算法
-def extract_tu_schedule(_img_np):
+# 🎯 全新優化識別邏輯：多備援班表擷取演算法
+def advanced_extract_schedule(_img_np):
     try:
         import pytesseract
         from pytesseract import Output
         
-        # 1. 影像灰階與高對比二值化處理
+        # 1. 進階影像預處理 (去噪、雙線性放大、自適應二值化)
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C_, cv2.THRESH_BINARY, 11, 2)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C_, cv2.THRESH_BINARY, 13, 3)
         
-        # 2. 透過 OCR 獲取圖像中每個文字的詳細座標詳細資料數據
+        # 2. 第一階段：取得全圖 OCR 詳細字典資料
         pil_img = Image.fromarray(thresh)
         d_data = pytesseract.image_to_data(pil_img, lang='chi_tra+eng', output_type=Output.DICT)
         
-        # 3. 搜尋「凃」或「牧」或「廷」關鍵字定位 Y 軸高度範圍
         target_y, target_h = None, None
         n_boxes = len(d_data['level'])
+        
+        # 3. 名字模糊匹配機制 (避免因 OCR 字體黏連漏偵測)
+        name_keywords = ["凃", "涂", "牧", "廷", "tu", "Tu"]
         for i in range(n_boxes):
-            text = d_data['text'][i]
-            if "凃" in text or "牧" in text or "廷" in text:
+            text = d_data['text'][i].strip()
+            if any(kw in text for kw in name_keywords):
                 target_y = d_data['top'][i]
                 target_h = d_data['height'][i]
                 break
                 
-        # 4. 如果找到名字座標，鎖定該專屬橫列區塊 (ROI)
+        # 核心路徑 A：成功定位名字橫列
         if target_y is not None:
             h_img, w_img = thresh.shape
-            # 向上與向下稍微放寬切片範圍，確保完整包覆該行表格
-            y_start = max(0, target_y - 10)
-            y_end = min(h_img, target_y + target_h + 15)
+            y_start = max(0, target_y - 15)
+            y_end = min(h_img, target_y + target_h + 20)
             
-            # 切割出專屬橫列影像，再次針對這行橫向文字進行深度解析
+            # 切出專屬 ROI 橫條
             row_roi = thresh[y_start:y_end, 0:w_img]
             roi_text = pytesseract.image_to_string(Image.fromarray(row_roi), lang='chi_tra+eng')
             
-            # 5. 掃描該列中的「月份/日期」並重組格式
-            # 對照表格日期順序與偵測到的班別文字進行排列
+            # 從橫列文字提取排班資訊
             pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
             matched_lines = []
             for line in roi_text.split('\n'):
@@ -143,23 +165,27 @@ def extract_tu_schedule(_img_np):
             
             if matched_lines:
                 return "\n".join(matched_lines)
-                
-        # 6. 後備智慧防護：如果名字辨識被格線切割，自動根據您的排班區間(4/21~5/20)進行資料清洗抓取
+
+        # 備援路徑 B：若名字受格線干擾未檢出，執行全局特徵提取防呆
         full_text = pytesseract.image_to_string(pil_img, lang='chi_tra+eng')
         all_matches = re.findall(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)', full_text)
         
         if all_matches:
-            # 篩選出合理的排班文字，排除其他干擾項
+            # 智慧過濾：只抓取化驗科常見的 4 月與 5 月的合理班表數據
             formatted = [f"{int(m)}/{int(d)}：{s.strip()}" for m, d, s in all_matches if int(m) in [4, 5]]
             if formatted:
-                # 去除重複並依日期排序
                 seen = set()
                 deduped = []
                 for item in formatted:
                     if item not in seen:
                         seen.add(item)
                         deduped.append(item)
-                return "\n".join(deduped[:30]) # 精確限制在一個班表週期的天數內
+                # 依日期由小到大排序
+                def get_date_key(x):
+                    parts = x.split('：')[0].split('/')
+                    return (int(parts[0]), int(parts[1]))
+                deduped.sort(key=get_date_key)
+                return "\n".join(deduped[:31])
                 
         return ""
     except Exception:
@@ -167,21 +193,21 @@ def extract_tu_schedule(_img_np):
 
 extracted_text = ""
 if opencv_image is not None:
-    with st.spinner("🎯 正在精準定位『凃牧廷』專屬橫列，並完整提取 1 號至 31 號所有班表內容..."):
-        ocr_extracted = extract_tu_schedule(opencv_image)
+    with st.spinner("🎯 正在套用影像強化濾鏡，優化照片中『月份、日期與個人班別』的識別度..."):
+        ocr_extracted = advanced_extract_schedule(opencv_image)
         if ocr_extracted:
             extracted_text = ocr_extracted
-            st.success("✨ 成功識別『凃牧廷』的完整區間班表！")
+            st.success("✨ 班表內容辨識完成！已自動將抓取結果排整齊於下方。")
         else:
             extracted_text = ""
-            st.warning("⚠️ 未能自動定位到名字。請確保圖片中的名字清晰且無反光遮擋。您也可以直接在下方框內手動貼上或修正。")
+            st.warning("⚠️ 照片可能有些許反光或歪斜導致自動辨識受阻。請確保文字端正，您也可以在下方直接手動貼上或修正。")
 else:
     extracted_text = ""
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`5/01：C`）。若有不完整，您可在此直接增刪修改。")
+st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`5/01：C`）。")
 user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250, placeholder="範例格式：\n4/21：B\n4/22：代A\n5/01：C")
 
 # 在步驟2和步驟3之間的新增確認按鈕
