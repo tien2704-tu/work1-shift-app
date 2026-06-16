@@ -1,4 +1,3 @@
-Plaintext
 easyocr
 opencv-python-headless
 Pillow
