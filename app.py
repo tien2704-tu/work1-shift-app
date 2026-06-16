@@ -1,21 +1,3 @@
-這個錯誤訊息依然是 NameError，並且 Traceback 明確指出：
-
-Plaintext
-File "/mount/src/work1-shift-app/app.py", line 1, in <module>
-    Python
-這代表程式碼檔案 app.py 的第一行（Line 1）開頭，依然殘留了 Python 這個單字，導致 Streamlit 啟動時把它當作一個變數或指令來執行而崩潰。
-
-這通常是因為複製程式碼時，不小心連同上方的說明文字（例如 Python 標籤）一起複製進去了。
-
-🛠️ 徹底解決方案
-請按照以下步驟操作：
-
-完全清空 您目前的 app.py 檔案內容，不要留任何字。
-
-複製下方全新且開頭完全乾淨的程式碼（第一行嚴格從 # -*- coding: utf-8 -*- 或 import 開始）。
-
-貼上並儲存檔案，然後重新部署或重啟 Streamlit 即可！
-
 Python
 # -*- coding: utf-8 -*-
 import streamlit as st
