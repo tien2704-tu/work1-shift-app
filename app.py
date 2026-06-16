@@ -95,7 +95,7 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 🎯 核心辨識邏輯：修正 cv2 常數拼寫錯誤
+# 🎯 核心辨識邏輯：包含混合佈局分析與環境防呆
 def robust_extract_schedule(_img_np):
     try:
         import pytesseract
@@ -105,8 +105,6 @@ def robust_extract_schedule(_img_np):
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
         gray = cv2.resize(gray, None, fx=1.8, fy=1.8, interpolation=cv2.INTER_LANCZOS4)
-        
-        # 【修正處】將原先的 cv2.ADAPTIVE_THRESH_GAUSSIAN_C_ 修正為 cv2.ADAPTIVE_THRESH_GAUSSIAN_C
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
         
         # 2. 混合佈局模式檢索
@@ -159,7 +157,6 @@ def robust_extract_schedule(_img_np):
             deduped.sort(key=get_date_key)
             return "\n".join(deduped[:31])
             
-        fallback_tokens = []
         words = re.findall(r'[0-9]{1,2}/[0-9]{1,2}|[ABC代HOO]', cleaned_text)
         if words:
             st.info("💡 系統偵測到零碎的排班符號，已為您自動彙整片段內容。")
@@ -167,13 +164,18 @@ def robust_extract_schedule(_img_np):
             
         return ""
     except Exception as e:
-        return f"辨識核心異常: {str(e)}"
+        err_msg = str(e)
+        if "tesseract is not installed" in err_msg.lower() or "path" in err_msg.lower():
+            return "ERR_TESSERACT_NOT_FOUND"
+        return f"辨識核心異常: {err_msg}"
 
 extracted_text = ""
 if opencv_image is not None:
     with st.spinner("🎯 正在啟用混合佈局分析與字元修補技術，深度擷取照片中的班表細節..."):
         ocr_extracted = robust_extract_schedule(opencv_image)
-        if ocr_extracted:
+        if ocr_extracted == "ERR_TESSERACT_NOT_FOUND":
+            st.error("❌ 系統偵測到伺服器尚未安裝 Tesseract OCR 主程式。請確認專案根目錄中已建立包含 'tesseract-ocr' 的 packages.txt 檔案並推送到 GitHub 重新部署。")
+        elif ocr_extracted:
             extracted_text = ocr_extracted
             st.success("✨ 班表內容處理完成！")
         else:
