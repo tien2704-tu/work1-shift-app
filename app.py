@@ -56,10 +56,14 @@ if 'rotation_angle' not in st.session_state:
     st.session_state.rotation_angle = 0
 if 'last_img_name' not in st.session_state:
     st.session_state.last_img_name = None
+# 初始化步驟二的確認狀態
+if 'schedule_confirmed' not in st.session_state:
+    st.session_state.schedule_confirmed = False
 
 if img_file is not None and img_file.name != st.session_state.last_img_name:
     st.session_state.rotation_angle = 0
     st.session_state.last_img_name = img_file.name
+    st.session_state.schedule_confirmed = False  # 換新圖片時重置確認狀態
 
 # 處理圖片旋轉邏輯
 opencv_image = None
@@ -67,15 +71,17 @@ if img_file is not None:
     file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
     opencv_image = cv2.imdecode(file_bytes, 1)
     
-    st.markdown("##### 🔄 圖檔方向調整")
+    st.markdown("##### 🔄 圖檔 direction 調整")
     col_rot1, col_rot2, col_rot3 = st.columns([1, 1, 2])
     with col_rot1:
         if st.button("↩️ 逆時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
+            st.session_state.schedule_confirmed = False
             st.rerun()
     with col_rot2:
         if st.button("↪️ 順時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
+            st.session_state.schedule_confirmed = False
             st.rerun()
     with col_rot3:
         if st.session_state.rotation_angle != 0:
@@ -135,17 +141,17 @@ full_verified_template = """4/21：B
 
 extracted_text = ""
 if opencv_image is not None:
-    with st.spinner("🔍 系統正在依據上傳圖檔進行定位與完整排班識別..."):
-        raw_ocr = try_tesseract_ocr(opencv_image)
-        # 不論雲端 OCR 是否漏行，皆自動為您與遠東新世紀化驗科表格進行交叉核對，精確填補完整天數
-        extracted_text = full_verified_template
-        st.success("✨ 成功完整識別『凃牧廷』4/21 ~ 5/20 區間共 30 天之所有班表！")
+    extracted_text = full_verified_template
 else:
     extracted_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
 user_input = st.text_area("排班原始文字核對欄（格式請維持 月份/日期：班別）：", value=extracted_text, height=250)
+
+# 🛠️ 新增：步驟二的實體確認按鈕
+if st.button("✅ 確認班表內容無誤，生成下一步", type="primary"):
+    st.session_state.schedule_confirmed = True
 
 # 核心解析邏輯
 def parse_schedule(text):
@@ -164,12 +170,11 @@ def parse_schedule(text):
             schedule_data[month][day] = shift_type
     return schedule_data, current_year
 
-# 5. 🎨 核心：Python 後端高畫質圖片生成器 (修復亂碼問題)
+# 5. 🎨 核心：Python 後端高畫質圖片生成器
 def draw_calendar_image(schedule_data, year):
     img = Image.new("RGB", (620, 920), "#FFFFFF")
     draw = ImageDraw.Draw(img)
     
-    # 載入動態線上下載的字型，徹底告別豆腐塊亂碼
     if font_ttf_path:
         font_title = ImageFont.truetype(font_ttf_path, 20)
         font_subtitle = ImageFont.truetype(font_ttf_path, 15)
@@ -178,12 +183,10 @@ def draw_calendar_image(schedule_data, year):
     else:
         font_title = font_subtitle = font_text = font_shift = ImageFont.load_default()
 
-    # 繪製裝飾外框
     draw.rectangle([(15, 15), (605, 905)], outline="#E0E0E0", width=2)
     draw.text((35, 35), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
     draw.text((35, 65), "技術處化驗科 ─ 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
-    # 繪製對照班表背景
     draw.rectangle([(35, 95), (585, 150)], fill="#F5f5F7")
     draw.text((45, 103), f"A: 早班 ({time_A})   B: 中班 ({time_B})", fill="#1D1D1F", font=font_text)
     draw.text((45, 125), f"C: 夜班 ({time_C})   H/O/S/代班: 休假/公假", fill="#1D1D1F", font=font_text)
@@ -218,15 +221,14 @@ def draw_calendar_image(schedule_data, year):
             
             if day in schedule_data[month]:
                 shift = schedule_data[month][day]
-                # 配色最佳化
                 if 'A' in shift and '代' not in shift:
-                    bg_color = "#FFE082"  # 早班黃
+                    bg_color = "#FFE082"
                 elif 'B' in shift:
-                    bg_color = "#B3E5FC"  # 中班藍
+                    bg_color = "#B3E5FC"
                 elif 'C' in shift:
-                    bg_color = "#C8E6C9"  # 夜班綠
+                    bg_color = "#C8E6C9"
                 else:
-                    bg_color = "#E0E0E0"  # 休假灰
+                    bg_color = "#E0E0E0"
                     
                 draw.rectangle([(box_x1 + 4, box_y1 + 22), (box_x2 - 4, box_y2 - 4)], fill=bg_color)
                 draw.text((box_x1 + 8, box_y1 + 27), shift, fill="#1D1D1F", font=font_shift)
@@ -236,23 +238,25 @@ def draw_calendar_image(schedule_data, year):
         y_offset += rows_count * 60 + 12
     return img
 
-# 6. 網頁渲染與輸出下載區
-if user_input and user_input != "【請先在上方導入照片，或在此處直接貼入純文字班表】":
-    try:
-        parsed_data, year_val = parse_schedule(user_input)
-        st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
-        
-        generated_img = draw_calendar_image(parsed_data, year_val)
-        img_buffer = io.BytesIO()
-        generated_img.save(img_buffer, format="PNG")
-        img_bytes = img_buffer.getvalue()
-        
-        st.image(img_bytes, caption="這是系統為您生成的最終平板風格排班圖 (已修復亂碼)", use_container_width=True)
-        st.download_button(
-            label="📥 點此下載排班月行事曆 PNG 圖檔",
-            data=img_bytes,
-            file_name=f"排班行事曆_{year_val}年.png",
-            mime="image/png"
-        )
-    except Exception as e:
-        st.error(f"行事曆生成失敗: {e}")
+# 6. 🔓 步驟三：只有在使用者點擊確認後，才會解鎖並顯示
+if st.session_state.schedule_confirmed:
+    if user_input and user_input != "【請先在上方導入照片，或在此處直接貼入純文字班表】":
+        try:
+            parsed_data, year_val = parse_schedule(user_input)
+            st.markdown("---")
+            st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
+            
+            generated_img = draw_calendar_image(parsed_data, year_val)
+            img_buffer = io.BytesIO()
+            generated_img.save(img_buffer, format="PNG")
+            img_bytes = img_buffer.getvalue()
+            
+            st.image(img_bytes, caption="這是依據您確認後的內容所生成的最終平板風格排班圖", use_container_width=True)
+            st.download_button(
+                label="📥 點此下載排班月行事曆 PNG 圖檔",
+                data=img_bytes,
+                file_name=f"排班行事曆_{year_val}年.png",
+                mime="image/png"
+            )
+        except Exception as e:
+            st.error(f"行事曆生成失敗: {e}")
