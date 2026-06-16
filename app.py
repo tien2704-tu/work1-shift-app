@@ -95,41 +95,38 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 🎯 強度升級：因應亂碼與複雜表格結構的 OCR 辨識邏輯
+# 🎯 核心辨識邏輯：修正 cv2 常數拼寫錯誤
 def robust_extract_schedule(_img_np):
     try:
         import pytesseract
         from pytesseract import Output
         
-        # 1. 影像極致強化（針對細網格與斷裂字型優化）
+        # 1. 影像極致強化
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
-        # 微調放大倍率與對比
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
         gray = cv2.resize(gray, None, fx=1.8, fy=1.8, interpolation=cv2.INTER_LANCZOS4)
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C_, cv2.THRESH_BINARY, 15, 5)
         
-        # 2. 混合佈局模式檢索 (解決表格內橫向文字斷裂問題)
+        # 【修正處】將原先的 cv2.ADAPTIVE_THRESH_GAUSSIAN_C_ 修正為 cv2.ADAPTIVE_THRESH_GAUSSIAN_C
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
+        
+        # 2. 混合佈局模式檢索
         pil_img = Image.fromarray(thresh)
         
-        # 使用 --psm 6 (假設為單一均勻文字區塊) 進行主掃描
         custom_config_6 = r'--psm 6 -c preserve_interword_spaces=1'
         raw_text_6 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=custom_config_6)
         
-        # 使用 --psm 11 (尋找盡可能多的稀疏文字) 作為備援掃描
         custom_config_11 = r'--psm 11'
         raw_text_11 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=custom_config_11)
         
         combined_text = raw_text_6 + "\n" + raw_text_11
         
-        # 3. 清洗亂碼與特殊符號（移除豆腐塊符號帶來的干擾）
+        # 3. 清洗亂碼與特殊符號
         cleaned_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', combined_text)
         
-        # 4. 智慧解析演算法：同時兼容「月/日：班別」與「單獨序號/字母」特徵
+        # 4. 智慧解析演算法
         matched_lines = []
-        
-        # 策略 A：標準正規匹配 (例如 4/21 B)
         standard_pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
         
-        # 策略 B：分離式特徵提取 (當表格欄位錯位時，尋找接近的數字與班別字母)
         lines = cleaned_text.split('\n')
         for line in lines:
             line_str = line.strip()
@@ -141,15 +138,13 @@ def robust_extract_schedule(_img_np):
                 m, d, shift = match.group(1), match.group(2), match.group(3).strip()
                 matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
             else:
-                # 尋找孤立的日期與班別特徵 (例如出現 "04 21" 且後方帶有 "B" 或 "A")
                 fallback_match = re.search(r'(\d{1,2})\s+(\d{1,2})\s+([A-Z代a-z0-9])', line_str)
                 if fallback_match:
                     m, d, shift = fallback_match.group(1), fallback_match.group(2), fallback_match.group(3).strip()
-                    if int(m) in [4, 5]: # 精準鎖定 4、5 月份
+                    if int(m) in [4, 5]:
                         matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
 
         if matched_lines:
-            # 進行資料去重並依日期排序
             seen = set()
             deduped = []
             for item in matched_lines:
@@ -164,7 +159,6 @@ def robust_extract_schedule(_img_np):
             deduped.sort(key=get_date_key)
             return "\n".join(deduped[:31])
             
-        # 如果還是沒有配對成功，將清洗後的英文與數字殘留輸出，供使用者最快速度校對
         fallback_tokens = []
         words = re.findall(r'[0-9]{1,2}/[0-9]{1,2}|[ABC代HOO]', cleaned_text)
         if words:
