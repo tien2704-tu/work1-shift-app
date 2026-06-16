@@ -1,4 +1,3 @@
-Python
 # -*- coding: utf-8 -*-
 import streamlit as st
 import datetime
@@ -31,7 +30,7 @@ with camera_tab:
 
 # 💡 預填預設文字
 if uploaded_file or camera_file:
-    st.success("✨ 照片導入成功！系統已自動為您檢索『凃牧廷』的排班區間。")
+    st.success("✨ 照片導入成功！系統已自動為您檢索『遠東新世紀化驗科 ─ 凃牧廷』的排班區間。")
     default_text = """【4月份區間】
 4/21 (二)：B
 4/22 (三)：O
@@ -109,8 +108,8 @@ def generate_html_with_download(schedule_data, year):
 
     <div id="calendar-card" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #ffffff; padding: 20px; border-radius: 16px; max-width: 480px; margin: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.05); box-sizing: border-box;">
         <div style="text-align: center; margin-bottom: 12px;">
-            <h1 style="font-size: 18px; color: #1d1d1f; margin: 0; font-weight: 700;">遠東新世紀股份有限公司 觀音化學纖維廠</h1>
-            <h2 style="font-size: 14px; color: #424245; margin: 4px 0 0 0; font-weight: 600;">凃牧廷 (B組) ─ 個人排班月行事曆</h2>
+            <h1 style="font-size: 16px; color: #1d1d1f; margin: 0; font-weight: 700;">遠東新世紀股份有限公司 觀音化學纖維廠</h1>
+            <h2 style="font-size: 14px; color: #424245; margin: 4px 0 0 0; font-weight: 600;">遠東新世紀化驗科 ─ 個人排班月行事曆</h2>
         </div>
         
         <div style="background: #f5f5f7; border-radius: 8px; padding: 8px; font-size: 10px; color: #1d1d1f; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-bottom: 12px; line-height: 1.4;">
@@ -193,7 +192,7 @@ def generate_html_with_download(schedule_data, year):
             useCORS: true
         }).then(canvas => {
             const link = document.createElement('a');
-            link.download = '凃牧廷_2026個人排班行事曆.png';
+            link.download = '2026個人排班行事曆.png';
             link.href = canvas.toDataURL('image/png');
             link.click();
         });
