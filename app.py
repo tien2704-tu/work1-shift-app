@@ -5,20 +5,20 @@ import re
 import calendar
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+import io
 
-# 延遲載入 easyocr 以優化網頁載入速度
+# 載入 OCR 辨識模型（設定快取避免重複載入變慢）
 @st.cache_resource
 def load_ocr_reader():
     import easyocr
-    # 設定支援繁體中文 (ch_tra) 與英文 (en)
     return easyocr.Reader(['ch_tra', 'en'], gpu=False)
 
 # 1. 網頁基礎設定
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("您可以透過【上傳檔案】或【手機現場拍照】導入最新班表，系統將自動進行光學辨識 (OCR)。")
+st.write("您可以透過【上傳檔案】或【手機現場拍照】導入最新班表，系統將自動辨識並產出可下載的行事曆圖檔。")
 
 # 2. 側邊欄：設定班別與時間對照
 st.sidebar.header("⚙️ 班別時間配置")
@@ -43,30 +43,23 @@ with camera_tab:
     if camera_file:
         img_file = camera_file
 
-# 初始化辨識出來的文字
+# 初始化辨識文字
 extracted_text = ""
 
 # 當有圖片輸入時，啟動真實 OCR 辨識
 if img_file is not None:
     with st.spinner("🔍 系統正在極速辨識圖檔中的排班文字，請稍候..."):
         try:
-            # 將上傳的檔案轉換為 OpenCV 影像格式
             file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
             opencv_image = cv2.imdecode(file_bytes, 1)
             
-            # 讀取 OCR 模型
             reader = load_ocr_reader()
-            
-            # 進行文字識別
             ocr_results = reader.readtext(opencv_image)
             
-            # 整理辨識出來的每行文字
             lines_dict = {}
             for (bbox, text, prob) in ocr_results:
-                if prob > 0.2:  # 過濾掉信心度過低的雜訊
-                    # 使用 y 座標進行基礎的分行排序
+                if prob > 0.2:
                     y_center = int((bbox[0][1] + bbox[2][1]) / 2)
-                    # 容許上下 15 像素內的文字視為同一行
                     matched_row = None
                     for r_y in lines_dict.keys():
                         if abs(r_y - y_center) < 15:
@@ -77,10 +70,8 @@ if img_file is not None:
                     else:
                         lines_dict[y_center] = [(bbox[0][0], text)]
             
-            # 根據座標從上到下、從左到右重組文字
             sorted_lines = []
             for r_y in sorted(lines_dict.keys()):
-                # 同一行內依照 x 座標從左到右排序
                 sorted_words = sorted(lines_dict[r_y], key=lambda x: x[0])
                 line_text = " ".join([w[1] for w in sorted_words])
                 sorted_lines.append(line_text)
@@ -89,25 +80,22 @@ if img_file is not None:
             st.success("✨ 圖檔字元識別完成！請在下方檢查並修正內容。")
             
         except Exception as ocr_err:
-            st.error(f"OCR 辨識模組初始化失敗，已自動切換回預設範本。錯誤訊息: {ocr_err}")
-            # 防呆機制：若環境缺少套件，自動代入歷史預設範本
-            extracted_text = """4/21：B\n4/22：O\n4/23：代A\n4/24：代A\n4/25：H\n4/26：B\n4/27：O\n4/28：H\n4/29：C\n4/30：C\n5/01：C\n5/02：C\n5/03：C\n5/04：O\n5/05：代A\n5/06：代公A\n5/07：代公A\n5/08：代公A\n5/09：A\n5/10：A\n5/11：H\n5/12：O\n5/13：代A\n5/14：C\n5/15：C\n5/16：C\n5/17：C\n5/18：S\n5/19：O\n5/20：O"""
+            st.error(f"OCR 辨識發生錯誤，已切換回預設範本。提示: {ocr_err}")
+            extracted_text = "4/21：B\n4/22：O\n4/23：代A\n4/24：代A\n4/25：H\n4/26：B"
 else:
     extracted_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-st.info("💡 貼心提示：OCR 辨識率受照片清晰度影響。若格式有歪斜，請手動調整為「月份/日期：班別代號」（例如：`4/21：B`），下方的行事曆就會同步更新！")
-user_input = st.text_area("OCR 提取出的原始純文字如下：", value=extracted_text, height=280)
+user_input = st.text_area("OCR 提取出的原始純文字如下（格式請維持 月份/日期：班別）：", value=extracted_text, height=200)
 
-# 5. 核心解析邏輯 (一格內上到下)
+# 核心解析邏輯
 def parse_schedule(text):
     schedule_data = {}
     lines = text.strip().split('\n')
     current_year = 2026  # 年度設定
     
     for line in lines:
-        # 相容多種格式：支援 4/21:B、4/21(二):B、4/21 B
         match = re.search(r'(\d+)/(\d+).*?[:：\s]\s*([A-Za-z0-9\u4e00-\u9fa5]+)', line)
         if match:
             month = int(match.group(1))
@@ -120,120 +108,105 @@ def parse_schedule(text):
             
     return schedule_data, current_year
 
-# 6. HTML 繪圖與下載生成器
-def generate_html_with_download(schedule_data, year):
-    html_content = f"""
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+# 5. 🎨 核心：Python 後端高畫質圖片生成器 (取代不穩定的前端截圖)
+def draw_calendar_image(schedule_data, year):
+    # 建立一個 600 x 850 的畫布 (高解析度白底)
+    img = Image.new("RGB", (600, 850), "#FFFFFF")
+    draw = ImageDraw.Draw(img)
     
-    <div style="text-align: center; margin-bottom: 15px;">
-        <button id="download-btn" style="background-color: #0071e3; color: white; border: none; padding: 10px 20px; font-size: 14px; font-weight: 600; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1); font-family: sans-serif;">
-            📥 點此匯出如同實體平板樣式的 PNG 圖檔
-        </button>
-    </div>
+    # 使用系統預設字型 (防止部署到 Linux 伺服器時找不到字型崩潰)
+    try:
+        font_title = ImageFont.truetype("Arial.ttf", 20)
+        font_subtitle = ImageFont.truetype("Arial.ttf", 16)
+        font_text = ImageFont.truetype("Arial.ttf", 12)
+    except IOError:
+        font_title = font_subtitle = font_text = ImageFont.load_default()
 
-    <div id="calendar-card" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #ffffff; padding: 20px; border-radius: 16px; max-width: 480px; margin: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.05); box-sizing: border-box;">
-        <div style="text-align: center; margin-bottom: 12px;">
-            <h1 style="font-size: 16px; color: #1d1d1f; margin: 0; font-weight: 700;">遠東新世紀股份有限公司 觀音化學纖維廠</h1>
-            <h2 style="font-size: 14px; color: #424245; margin: 4px 0 0 0; font-weight: 600;">遠東新世紀化驗科 ─ 個人排班月行事曆</h2>
-        </div>
-        
-        <div style="background: #f5f5f7; border-radius: 8px; padding: 8px; font-size: 10px; color: #1d1d1f; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-bottom: 12px; line-height: 1.4;">
-            <div><span style="background:#ffe082; color:#7f6000; padding:1px 4px; border-radius:3px; font-weight:bold;">A</span> 早班 ({time_A})</div>
-            <div><span style="background:#b3e5fc; color:#0277bd; padding:1px 4px; border-radius:3px; font-weight:bold;">B</span> 中班/小夜 ({time_B})</div>
-            <div><span style="background:#c8e6c9; color:#2e7d32; padding:1px 4px; border-radius:3px; font-weight:bold;">C</span> 夜班/大夜 ({time_C})</div>
-            <div><span style="background:#ffcc80; color:#b78103; padding:1px 4px; border-radius:3px; font-weight:bold;">加</span> 加班組合班別</div>
-            <div style="grid-column: span 2;"><span style="background:#e0e0e0; color:#616161; padding:1px 4px; border-radius:3px; font-weight:bold;">休</span> H / O / S / 代A、B、C (均為休假)</div>
-        </div>
-    """
+    # 繪製標頭與外框花框
+    draw.rectangle([(20, 20), (580, 830)], outline="#E0E0E0", width=2)
+    draw.text((40, 40), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
+    draw.text((40, 70), "技術處化驗科 ─ 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
+    # 繪製資訊說明欄背景
+    draw.rectangle([(40, 105), (560, 155)], fill="#F5f5F7")
+    draw.text((50, 115), f"A: 早班 ({time_A})  |  B: 中班 ({time_B})", fill="#1D1D1F", font=font_text)
+    draw.text((50, 135), f"C: 夜班 ({time_C})  |  H/O/S/代班: 休假", fill="#1D1D1F", font=font_text)
+
+    y_offset = 180
+    
+    # 遍歷月份進行繪製
     for month in sorted(schedule_data.keys()):
-        html_content += f"<div style='font-size: 12px; font-weight: bold; background: #e8e8ed; padding: 4px 8px; border-radius: 4px; margin: 12px 0 4px 0; color:#1d1d1f;'>{year}年 {month:02d}月</div>"
-        html_content += "<div style='display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center;'>"
+        draw.rectangle([(40, y_offset), (560, y_offset + 25)], fill="#E8E8ED")
+        draw.text((50, y_offset + 5), f"{year}年 {month:02d}月", fill="#1D1D1F", font=font_subtitle)
+        y_offset += 35
         
-        for wk in ['日', '一', '二', '三', '四', '五', '六']:
-            html_content += f"<div style='font-size: 11px; font-weight: 600; color: #86868b; padding-bottom: 2px;'>{wk}</div>"
-            
-        days_in_month = sorted(schedule_data[month].keys())
-        if not days_in_month:
-            continue
-            
-        first_day_date = datetime.date(year, month, 1)
-        python_wk = first_day_date.weekday()
-        blank_cells = (python_wk + 1) % 7
+        # 畫星期表頭
+        weeks = ['日', '一', '二', '三', '四', '五', '六']
+        for i, wk in enumerate(weeks):
+            draw.text((45 + i*72, y_offset), wk, fill="#86868B", font=font_text)
+        y_offset += 20
         
-        for _ in range(blank_cells):
-            html_content += "<div style='background: transparent;'></div>"
-            
+        first_day = datetime.date(year, month, 1)
+        blank_cells = (first_day.weekday() + 1) % 7
         total_days = calendar.monthrange(year, month)[1]
+        
+        current_cell = blank_cells
+        x_start = 40
+        
+        # 繪製日期方格
         for day in range(1, total_days + 1):
+            col = current_cell % 7
+            row = current_cell // 7
+            
+            box_x1 = x_start + col * 73
+            box_y1 = y_offset + row * 55
+            box_x2 = box_x1 + 68
+            box_y2 = box_y1 + 50
+            
+            # 預設方格背景
+            draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill="#F5F5F7")
+            draw.text((box_x1 + 5, box_y1 + 5), str(day), fill="#1D1D1F", font=font_text)
+            
+            # 填入排班代號
             if day in schedule_data[month]:
                 shift = schedule_data[month][day]
+                # 簡單區分顏色區塊
+                bg_color = "#FFE082" if shift == 'A' else ("#B3E5FC" if shift == 'B' else ("#C8E6C9" if shift == 'C' else "#E0E0E0"))
+                draw.rectangle([(box_x1 + 5, box_y1 + 22), (box_x2 - 5, box_y2 - 5)], fill=bg_color)
+                draw.text((box_x1 + 12, box_y1 + 26), shift, fill="#1D1D1F", font=font_text)
                 
-                # 色彩與規則識別邏輯
-                if shift == 'A':
-                    bg_color, text_color, label, subtitle = "#ffe082", "#7f6000", "A", "早班"
-                elif shift in ['AH', 'AO', 'AS']:
-                    bg_color, text_color, label, subtitle = "#fff59d", "#b78103", shift, "早加班"
-                elif shift == 'B':
-                    bg_color, text_color, label, subtitle = "#b3e5fc", "#0277bd", "B", "中班"
-                elif shift in ['BH', 'BO', 'BS']:
-                    bg_color, text_color, label, subtitle = "#81d4fa", "#01579b", shift, "中加班"
-                elif shift == 'C':
-                    bg_color, text_color, label, subtitle = "#c8e6c9", "#2e7d32", "C", "夜班"
-                elif shift in ['CH', 'CO', 'CS']:
-                    bg_color, text_color, label, subtitle = "#a5d6a7", "#1b5e20", shift, "夜加班"
-                elif '公' in shift:
-                    bg_color, text_color, label, subtitle = "#ffe082", "#7f6000", shift, "急救初訓"
-                elif shift in ['H', 'O', 'S'] or shift in ['代A', '代B', '代C']:
-                    bg_color, text_color, label, subtitle = "#e0e0e0", "#616161", shift, "休假"
-                else:
-                    bg_color, text_color, label, subtitle = "#eeeeee", "#9e9e9e", shift, "外班"
-                    
-                html_content += f"""
-                <div style="background: #f5f5f7; border-radius: 6px; padding: 4px 2px; min-height: 44px; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box;">
-                    <div style="font-size: 10px; font-weight: 600; color: #1d1d1f; text-align: left; padding-left: 3px;">{day}</div>
-                    <div style="background: {bg_color}; color: {text_color}; font-size: 9px; font-weight: bold; padding: 1px 0; border-radius: 4px; margin: 1px 2px;">
-                        {label}
-                        <span style="font-size: 7px; color: rgba(0,0,0,0.5); display: block; font-weight: normal;">{subtitle}</span>
-                    </div>
-                </div>
-                """
-            else:
-                html_content += f"""
-                <div style="background: #fafafa; border-radius: 6px; padding: 4px 2px; min-height: 44px; display: flex; flex-direction: column; justify-content: flex-start; box-sizing: border-box; opacity: 0.4;">
-                    <div style="font-size: 10px; font-weight: 500; color: #86868b; text-align: left; padding-left: 3px;">{day}</div>
-                </div>
-                """
-        html_content += "</div>"
-    html_content += "</div>"
-    
-    html_content += """
-    <script>
-    document.getElementById('download-btn').addEventListener('click', function() {
-        const element = document.getElementById('calendar-card');
-        html2canvas(element, {
-            scale: 2,
-            backgroundColor: "#ffffff",
-            useCORS: true
-        }).then(canvas => {
-            const link = document.createElement('a');
-            link.download = '2026個人排班行事曆.png';
-            link.href = canvas.toDataURL('image/png');
-            link.click();
-        });
-    });
-    </script>
-    """
-    return html_content
+            current_cell += 1
+            
+        rows_count = (current_cell - 1) // 7 + 1
+        y_offset += rows_count * 58 + 10
+        
+    return img
 
-# 7. 📸 步驟三：即時網格生成與確認
+# 6. 網頁渲染與輸出下載區
 if user_input and user_input != "【請先在上方導入照片，或在此處直接貼入純文字班表】":
     try:
         parsed_data, year_val = parse_schedule(user_input)
-        final_html = generate_html_with_download(parsed_data, year_val)
         
-        st.subheader("🖼️ 步驟三：美化行事曆預覽與下載")
-        st.components.v1.html(final_html, height=720, scrolling=False)
+        st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
+        
+        # 在後端直接繪製圖檔
+        generated_img = draw_calendar_image(parsed_data, year_val)
+        
+        # 轉成 bytes 供 Streamlit 網頁顯示與下載
+        img_buffer = io.BytesIO()
+        generated_img.save(img_buffer, format="PNG")
+        img_bytes = img_buffer.getvalue()
+        
+        # 1. 在網頁上呈現渲染好的精美圖檔預覽
+        st.image(img_bytes, caption="這是系統即將為您導出的最終平板風格排班圖", use_container_width=True)
+        
+        # 2. 產出真正的「下載圖檔功能」按鈕！點擊即可保存到手機或電腦
+        st.download_button(
+            label="📥 點此下載排班月行事曆 PNG 圖檔",
+            data=img_bytes,
+            file_name=f"排班行事曆_{year_val}年.png",
+            mime="image/png"
+        )
         
     except Exception as e:
-        st.error(f"解析發生錯誤: {e}")
+        st.error(f"行事曆生成失敗: {e}")
