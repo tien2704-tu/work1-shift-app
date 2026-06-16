@@ -95,91 +95,96 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 🎯 全新優化識別邏輯：多備援班表擷取演算法
-def advanced_extract_schedule(_img_np):
+# 🎯 強度升級：因應亂碼與複雜表格結構的 OCR 辨識邏輯
+def robust_extract_schedule(_img_np):
     try:
         import pytesseract
         from pytesseract import Output
         
-        # 1. 進階影像預處理 (去噪、雙線性放大、自適應二值化)
+        # 1. 影像極致強化（針對細網格與斷裂字型優化）
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C_, cv2.THRESH_BINARY, 13, 3)
+        # 微調放大倍率與對比
+        gray = cv2.resize(gray, None, fx=1.8, fy=1.8, interpolation=cv2.INTER_LANCZOS4)
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C_, cv2.THRESH_BINARY, 15, 5)
         
-        # 2. 第一階段：取得全圖 OCR 詳細字典資料
+        # 2. 混合佈局模式檢索 (解決表格內橫向文字斷裂問題)
         pil_img = Image.fromarray(thresh)
-        d_data = pytesseract.image_to_data(pil_img, lang='chi_tra+eng', output_type=Output.DICT)
         
-        target_y, target_h = None, None
-        n_boxes = len(d_data['level'])
+        # 使用 --psm 6 (假設為單一均勻文字區塊) 進行主掃描
+        custom_config_6 = r'--psm 6 -c preserve_interword_spaces=1'
+        raw_text_6 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=custom_config_6)
         
-        # 3. 名字模糊匹配機制 (避免因 OCR 字體黏連漏偵測)
-        name_keywords = ["凃", "涂", "牧", "廷", "tu", "Tu"]
-        for i in range(n_boxes):
-            text = d_data['text'][i].strip()
-            if any(kw in text for kw in name_keywords):
-                target_y = d_data['top'][i]
-                target_h = d_data['height'][i]
-                break
+        # 使用 --psm 11 (尋找盡可能多的稀疏文字) 作為備援掃描
+        custom_config_11 = r'--psm 11'
+        raw_text_11 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=custom_config_11)
+        
+        combined_text = raw_text_6 + "\n" + raw_text_11
+        
+        # 3. 清洗亂碼與特殊符號（移除豆腐塊符號帶來的干擾）
+        cleaned_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', combined_text)
+        
+        # 4. 智慧解析演算法：同時兼容「月/日：班別」與「單獨序號/字母」特徵
+        matched_lines = []
+        
+        # 策略 A：標準正規匹配 (例如 4/21 B)
+        standard_pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
+        
+        # 策略 B：分離式特徵提取 (當表格欄位錯位時，尋找接近的數字與班別字母)
+        lines = cleaned_text.split('\n')
+        for line in lines:
+            line_str = line.strip()
+            if not line_str:
+                continue
                 
-        # 核心路徑 A：成功定位名字橫列
-        if target_y is not None:
-            h_img, w_img = thresh.shape
-            y_start = max(0, target_y - 15)
-            y_end = min(h_img, target_y + target_h + 20)
-            
-            # 切出專屬 ROI 橫條
-            row_roi = thresh[y_start:y_end, 0:w_img]
-            roi_text = pytesseract.image_to_string(Image.fromarray(row_roi), lang='chi_tra+eng')
-            
-            # 從橫列文字提取排班資訊
-            pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
-            matched_lines = []
-            for line in roi_text.split('\n'):
-                match = pattern.search(line)
-                if match:
-                    m, d, shift = match.group(1), match.group(2), match.group(3).strip()
-                    matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
-            
-            if matched_lines:
-                return "\n".join(matched_lines)
+            match = standard_pattern.search(line_str)
+            if match:
+                m, d, shift = match.group(1), match.group(2), match.group(3).strip()
+                matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
+            else:
+                # 尋找孤立的日期與班別特徵 (例如出現 "04 21" 且後方帶有 "B" 或 "A")
+                fallback_match = re.search(r'(\d{1,2})\s+(\d{1,2})\s+([A-Z代a-z0-9])', line_str)
+                if fallback_match:
+                    m, d, shift = fallback_match.group(1), fallback_match.group(2), fallback_match.group(3).strip()
+                    if int(m) in [4, 5]: # 精準鎖定 4、5 月份
+                        matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
 
-        # 備援路徑 B：若名字受格線干擾未檢出，執行全局特徵提取防呆
-        full_text = pytesseract.image_to_string(pil_img, lang='chi_tra+eng')
-        all_matches = re.findall(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)', full_text)
-        
-        if all_matches:
-            # 智慧過濾：只抓取化驗科常見的 4 月與 5 月的合理班表數據
-            formatted = [f"{int(m)}/{int(d)}：{s.strip()}" for m, d, s in all_matches if int(m) in [4, 5]]
-            if formatted:
-                seen = set()
-                deduped = []
-                for item in formatted:
-                    if item not in seen:
-                        seen.add(item)
-                        deduped.append(item)
-                # 依日期由小到大排序
-                def get_date_key(x):
-                    parts = x.split('：')[0].split('/')
-                    return (int(parts[0]), int(parts[1]))
-                deduped.sort(key=get_date_key)
-                return "\n".join(deduped[:31])
+        if matched_lines:
+            # 進行資料去重並依日期排序
+            seen = set()
+            deduped = []
+            for item in matched_lines:
+                if item not in seen:
+                    seen.add(item)
+                    deduped.append(item)
+                    
+            def get_date_key(x):
+                parts = x.split('：')[0].split('/')
+                return (int(parts[0]), int(parts[1]))
                 
+            deduped.sort(key=get_date_key)
+            return "\n".join(deduped[:31])
+            
+        # 如果還是沒有配對成功，將清洗後的英文與數字殘留輸出，供使用者最快速度校對
+        fallback_tokens = []
+        words = re.findall(r'[0-9]{1,2}/[0-9]{1,2}|[ABC代HOO]', cleaned_text)
+        if words:
+            st.info("💡 系統偵測到零碎的排班符號，已為您自動彙整片段內容。")
+            return "\n".join([f"請確認此行 ➡️ {w}" for w in words[:20]])
+            
         return ""
-    except Exception:
-        return ""
+    except Exception as e:
+        return f"辨識核心異常: {str(e)}"
 
 extracted_text = ""
 if opencv_image is not None:
-    with st.spinner("🎯 正在套用影像強化濾鏡，優化照片中『月份、日期與個人班別』的識別度..."):
-        ocr_extracted = advanced_extract_schedule(opencv_image)
+    with st.spinner("🎯 正在啟用混合佈局分析與字元修補技術，深度擷取照片中的班表細節..."):
+        ocr_extracted = robust_extract_schedule(opencv_image)
         if ocr_extracted:
             extracted_text = ocr_extracted
-            st.success("✨ 班表內容辨識完成！已自動將抓取結果排整齊於下方。")
+            st.success("✨ 班表內容處理完成！")
         else:
             extracted_text = ""
-            st.warning("⚠️ 照片可能有些許反光或歪斜導致自動辨識受阻。請確保文字端正，您也可以在下方直接手動貼上或修正。")
+            st.warning("⚠️ 由於照片中的文字帶有編碼亂碼塊，自動辨識受到限制。請直接在下方核對欄貼上或補上您的班表。")
 else:
     extracted_text = ""
 
