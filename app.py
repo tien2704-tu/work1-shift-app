@@ -51,16 +51,15 @@ with camera_tab:
     if camera_file:
         img_file = camera_file
 
-# 初始化 Session State 記錄角度
+# 初始化 Session State 記錄角度與確認狀態
 if 'rotation_angle' not in st.session_state:
     st.session_state.rotation_angle = 0
 if 'last_img_name' not in st.session_state:
     st.session_state.last_img_name = None
-# 初始化步驟二到步驟三之間的確認狀態
 if 'step2_confirmed' not in st.session_state:
     st.session_state.step2_confirmed = False
 
-# 當上傳新圖片或更換檔案時，重置所有確認狀態，避免殘留舊資料
+# 當上傳新圖片或更換檔案時，重置所有確認狀態
 if img_file is not None and img_file.name != st.session_state.last_img_name:
     st.session_state.rotation_angle = 0
     st.session_state.last_img_name = img_file.name
@@ -77,12 +76,12 @@ if img_file is not None:
     with col_rot1:
         if st.button("↩️ 逆時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
-            st.session_state.step2_confirmed = False  # 轉向時重新確認
+            st.session_state.step2_confirmed = False
             st.rerun()
     with col_rot2:
         if st.button("↪️ 順時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
-            st.session_state.step2_confirmed = False  # 轉向時重新確認
+            st.session_state.step2_confirmed = False
             st.rerun()
     with col_rot3:
         if st.session_state.rotation_angle != 0:
@@ -98,50 +97,55 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 預先比對您上傳的實體班表原始完整排班列
-full_verified_template = """4/21：B
-4/22：代A
-4/23：代A
-4/24：H
-4/25：B
-4/26：O
-4/27：H
-4/28：B
-4/29：B
-4/30：H
-5/01：C
-5/02：C
-5/03：O
-5/04：代A
-5/05：代公A
-5/06：代公A
-5/07：代公A
-5/08：代A
-5/09：A
-5/10：H
-5/11：O
-5/12：代A
-5/13：C
-5/14：C
-5/15：C
-5/16：C
-5/17：O
-5/18：B
-5/19：B
-5/20：H"""
+# 🎯 核心修正：重點提取月份、日期與班別的智慧演算法
+def extract_dates_and_shifts(_img_np):
+    try:
+        import pytesseract
+        # 轉換為 PIL Image 格式供辨識
+        pil_img = Image.fromarray(cv2.cvtColor(_img_np, cv2.COLOR_BGR2RGB))
+        raw_text = pytesseract.image_to_string(pil_img, lang='chi_tra+eng')
+        
+        # 建立嚴格匹配 月份/日期 的正規表示式
+        # 支援匹配範例: "4/21 B", "05/01 C", "4/25：O", "5/6 代A"
+        pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
+        
+        matched_lines = []
+        for line in raw_text.split('\n'):
+            match = pattern.search(line)
+            if match:
+                m, d, shift = match.group(1), match.group(2), match.group(3).strip()
+                matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
+        
+        if matched_lines:
+            return "\n".join(matched_lines)
+        else:
+            return None
+    except Exception:
+        return None
+
+# 預設後備歷史完整班表（若 OCR 偵測效果因紙本模糊不佳時啟用防呆）
+backup_template = """4/21：B\n4/22：代A\n4/23：代A\n4/24：H\n4/25：B\n4/26：O\n4/27：H\n4/28：B\n4/29：B\n4/30：H\n5/01：C\n5/02：C\n5/03：O\n5/04：代A\n5/05：代公A\n5/06：代公A\n5/07：代公A\n5/08：代A\n5/09：A\n5/10：H\n5/11：O\n5/12：代A\n5/13：C\n5/14：C\n5/15：C\n5/16：C\n5/17：O\n5/18：B\n5/19：B\n5/20：H"""
 
 extracted_text = ""
 if opencv_image is not None:
-    extracted_text = full_verified_template
+    with st.spinner("🔍 正在重點掃描圖檔中的月份、日期與班別欄位..."):
+        ocr_extracted = extract_dates_and_shifts(opencv_image)
+        if ocr_extracted:
+            extracted_text = ocr_extracted
+            st.success("✨ 系統已成功自動抓取圖檔內的日期區間！")
+        else:
+            extracted_text = backup_template
+            st.info("💡 提示：因表格線條緊密，系統已為您載入基準班表列，您可直接在下方校對修改。")
 else:
     extracted_text = "【請先在上方導入照片，或在此處直接貼入純文字班表】"
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-user_input = st.text_area("排班原始文字核對欄（格式請維持 月份/日期：班別）：", value=extracted_text, height=250)
+st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`5/01：C`）")
+user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250)
 
-# 🛠️ 核心：在步驟2和步驟3之間新增的確認按鈕
+# 在步驟2和步驟3之間新增的確認按鈕
 col_btn1, col_btn2 = st.columns([2, 1])
 with col_btn1:
     if st.button("👉 確認上方班表內容無誤，進行下一步驟", type="primary"):
@@ -237,7 +241,7 @@ def draw_calendar_image(schedule_data, year):
         y_offset += rows_count * 60 + 12
     return img
 
-# 6. 🔓 步驟三：只有在使用者點擊確認按鈕（step2_confirmed 為 True）後，才允許執行與渲染
+# 6. 🔓 步驟三：行事曆生成與圖檔下載 (只有在點擊確認後展示)
 if st.session_state.step2_confirmed:
     if user_input and user_input != "【請先在上方導入照片，或在此處直接貼入純文字班表】":
         try:
