@@ -13,7 +13,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("透過上傳大班表照片，系統將鎖定【凃牧廷】同仁的橫向排班流，自動過濾其餘同仁數據，精準產出個人專屬行事曆。")
+st.write("透過上傳大班表照片，系統將鎖定工號【26811】的橫向排班數據，自動過濾其餘同仁數據，精準產出個人專屬行事曆。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -96,12 +96,12 @@ if img_file is not None:
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
 
-# 🎯 核心辨識邏輯：鎖定「凃牧廷」專屬橫向過濾演算法
-def robust_extract_user_schedule(_img_np, base_m, last_m_days):
+# 🎯 核心辨識邏輯：鎖定工號「26811」專屬橫向過濾演算法
+def robust_extract_id_schedule(_img_np, base_m, last_m_days):
     try:
         import pytesseract
         
-        # 影像優化
+        # 影像優化預處理
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 7)
@@ -114,17 +114,16 @@ def robust_extract_user_schedule(_img_np, base_m, last_m_days):
             "代A", "代B", "代C", "A", "B", "C", "H", "O", "S"
         ]
 
-        # 將文本按行切分，精準找出含有「凃牧廷」的那一行
+        # 將文本按行切分，尋找包含工號 26811 的那一橫行
         lines = raw_text.split('\n')
         target_line_text = ""
         
-        # 考量 OCR 繁體字形對「凃」的誤差，容許模糊比對
         for line in lines:
-            if any(name_key in line for name_key in ["凃牧廷", "涂牧廷", "牧廷", "廷"]):
+            if "26811" in line:
                 target_line_text = line
                 break
                 
-        # 如果整張圖完全找不到名字，則改用全圖掃描作為備援
+        # 如果整張圖找不到該工號，使用全文字流作為備援
         if not target_line_text:
             tokens = raw_text.split()
         else:
@@ -133,7 +132,7 @@ def robust_extract_user_schedule(_img_np, base_m, last_m_days):
         extracted_dict = {}
         found_shifts = []
         
-        # 收集該行中所有符合「班別特徵」的單字
+        # 收集該行所有合法的班別代碼
         for t in tokens:
             t = t.strip().upper()
             for vs in valid_shifts:
@@ -162,19 +161,19 @@ def robust_extract_user_schedule(_img_np, base_m, last_m_days):
 
 # 執行辨識
 ocr_data_dict = {}
-found_user = False
+found_id = False
 if opencv_image is not None:
-    with st.spinner(f"🔍 正在班表中精準定位【凃牧廷】的排班數據線..."):
-        ocr_data_dict, found_user = robust_extract_user_schedule(opencv_image, target_base_month, last_month_total_days)
-        if found_user:
-            st.success("🎯 成功定位【凃牧廷】同仁的排班橫向流！其餘無關數據已自動過濾。")
+    with st.spinner(f"🔍 正在班表中精準定位工號【26811】的排班數據線..."):
+        ocr_data_dict, found_id = robust_extract_id_schedule(opencv_image, target_base_month, last_month_total_days)
+        if found_id:
+            st.success("🎯 成功定位工號【26811】的排班數據！其餘同仁班表已自動過濾。")
         else:
-            st.warning("⚠️ 未能自動在圖中辨識出「凃牧廷」字樣。系統已為您鋪設標準順序日期框架，請手動校對。")
+            st.warning("⚠️ 未能自動在圖中辨識出工號「26811」字樣。系統已為您建立標準日期框架，請在下方手動微調校對。")
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
-st.subheader("📝 步驟二：【凃牧廷】個人班表核對與人工修正")
-st.markdown(f"**💡 請核對下方【凃牧廷】個人的排班。如果有漏讀，直接把該日期的 `O` 改成正確班別即可！**")
+st.subheader("📝 步驟二：工號【26811】排班核對與人工修正")
+st.markdown(f"**💡 請核對下方【26811】個人的排班。如果有漏讀，直接把該日期的 `O` 改成正確班別即可！**")
 
 merged_lines = []
 # 上個月 21 日至月底
@@ -188,12 +187,12 @@ for d in range(1, 21):
     merged_lines.append(f"{next_m}/{d:02d}：{shift_val}")
 
 final_placeholder_text = "\n".join(merged_lines)
-user_input = st.text_area("凃牧廷 個人專屬排班核對欄：", value=final_placeholder_text, height=350)
+user_input = st.text_area("工號 26811 個人專屬排班核對欄：", value=final_placeholder_text, height=350)
 
 # 確認按鈕
 col_btn1, col_btn2 = st.columns([2, 1])
 with col_btn1:
-    if st.button("👉 確認【凃牧廷】班表無誤，繪製月行事曆圖檔", type="primary"):
+    if st.button("👉 確認【26811】班表無誤，繪製月行事曆圖檔", type="primary"):
         st.session_state.step2_confirmed = True
 with col_btn2:
     if st.session_state.step2_confirmed:
@@ -235,7 +234,7 @@ def draw_calendar_image(schedule_data, year):
     # 外框
     draw.rectangle([(15, 15), (605, 945)], outline="#E0E0E0", width=2)
     draw.text((35, 35), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
-    draw.text((35, 60), "技術處化驗科 ─ 凃牧廷 個人排班月行事曆", fill="#424245", font=font_subtitle)
+    draw.text((35, 60), "技術處化驗科 ─ 工號 26811 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
     # 看板色彩圖例
     draw.rectangle([(35, 90), (585, 155)], fill="#F5F5F7")
@@ -327,11 +326,11 @@ if st.session_state.step2_confirmed:
                 generated_img.save(img_buffer, format="PNG")
                 img_bytes = img_buffer.getvalue()
                 
-                st.image(img_bytes, caption=f"已成功建立 凃牧廷 同仁專屬排班畫布", use_container_width=True)
+                st.image(img_bytes, caption=f"已成功建立工號 26811 個人專屬排班看板", use_container_width=True)
                 st.download_button(
-                    label="📥 點此下載 凃牧廷 專屬月行事曆 PNG 圖檔",
+                    label="📥 點此下載工號 26811 專屬月行事曆 PNG 圖檔",
                     data=img_bytes,
-                    file_name=f"化驗科排班行事曆_凃牧廷_{target_base_month}月21日至下月20日.png",
+                    file_name=f"化驗科排班行事曆_26811_{target_base_month}月21日至下月20日.png",
                     mime="image/png"
                 )
             else:
