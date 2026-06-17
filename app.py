@@ -13,7 +13,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("您可以透過【上傳檔案】或【手機現場拍照】導入最新班表，系統將自動定位辨識並產出可下載的行事曆圖檔。")
+st.write("您可以透過【上傳檔案】導入最新班表，系統將自動定位辨識並產出可下載的行事曆圖檔。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -35,20 +35,11 @@ time_A = st.sidebar.text_input("早班 (A)", "08:00 - 16:00")
 time_B = st.sidebar.text_input("中班 / 小夜班 (B)", "16:00 - 24:00")
 time_C = st.sidebar.text_input("夜班 / 大夜班 (C)", "00:00 - 08:00")
 
-# 3. 📸 照片上傳與拍照功能區
-st.subheader("📸 步驟一：導入班表照片 / 圖檔")
-upload_tab, camera_tab = st.tabs(["📁 上傳班表圖檔", "📷 手機拍照導入"])
+# 3. 📸 照片上傳功能區（已取消手機拍照功能）
+st.subheader("📸 步驟一：導入班表圖檔")
+uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
 
-img_file = None
-with upload_tab:
-    uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
-    if uploaded_file:
-        img_file = uploaded_file
-
-with camera_tab:
-    camera_file = st.camera_input("請對準紙本班表進行拍照：")
-    if camera_file:
-        img_file = camera_file
+img_file = uploaded_file
 
 # 初始化 Session State
 if 'rotation_angle' not in st.session_state:
@@ -96,48 +87,40 @@ if img_file is not None:
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
 
-# 🎯 徹底重構的暴力解算 OCR 識別核心
+# 🎯 核心辨識邏輯：全局字元網格檢索
 def robust_extract_schedule(_img_np):
     try:
         import pytesseract
         
-        # 1. 針對照片進行多重影像預處理 (提升反差，過濾紙張灰底)
+        # 1. 影像預處理
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
         gray = cv2.medianBlur(gray, 3)
-        # 放大圖片使小字體清晰
         gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 7)
         
-        # 2. 同時提取兩種 PSM 模式下的全圖純文字
+        # 2. 提取全圖純文字
         pil_img = Image.fromarray(thresh)
         raw_text_6 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 6')
         raw_text_11 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 11')
         
         full_blob = raw_text_6 + "\n" + raw_text_11
-        
-        # 移除不可見亂碼，統一轉換為半形
         full_blob = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', full_blob)
         
-        # 3. 解析當前年份與月份特徵 (從照片尋找如 2026 或 04、05)
-        target_month = 4 # 預設防呆為照片顯示之 4 月
+        # 3. 解析月份特徵
+        target_month = 4 
         if "2026" in full_blob:
             month_match = re.search(r'2026[^\d]*0?([45])', full_blob)
             if month_match:
                 target_month = int(month_match.group(1))
 
-        # 4. 全局 Token 清洗與配對演算法
-        # 我們直接找出圖片中所有「可能是日期」與「可能是班別」的獨立單字
+        # 4. 全局 Token 清洗與配對
         tokens = full_blob.split()
-        
         schedule_map = {}
         pending_day = None
-        
-        # 定義合法的班別代號集合
         valid_shifts = {"A", "B", "C", "代A", "H", "O", "S", "a", "b", "c"}
         
         for t in tokens:
             t = t.strip()
-            # 檢查是否為標準的 M/D 格式 (例如 4/21)
             md_match = re.search(r'([45])[:/.\-_](\d{1,2})', t)
             if md_match:
                 m_val = int(md_match.group(1))
@@ -147,17 +130,13 @@ def robust_extract_schedule(_img_np):
                     pending_day = d_val
                 continue
                 
-            # 如果單純是 1~2 位數的純數字，且前面沒有未配對的日期，暫存為可能的「日」
             if t.isdigit():
                 val = int(t)
-                # 過濾掉時間（如 08, 16, 24, 00）與年份（2026）
                 if 1 <= val <= 31 and val not in [2026, 8, 16, 24]:
                     pending_day = val
                 continue
             
-            # 如果是班別代號，且目前有留存的「日」，立刻進行綁定
             if t in valid_shifts or any(vs in t for vs in valid_shifts):
-                # 提取出乾淨的班別名稱
                 shift_clean = ""
                 if "代A" in t: shift_clean = "代A"
                 elif "A" in t or "a" in t: shift_clean = "A"
@@ -169,9 +148,8 @@ def robust_extract_schedule(_img_np):
                 
                 if pending_day and shift_clean:
                     schedule_map[pending_day] = shift_clean
-                    pending_day = None # 配對成功，清除狀態
+                    pending_day = None 
                     
-        # 5. 將結果轉回標準的「月份/日期：班別」文字清單
         matched_lines = []
         for d in sorted(schedule_map.keys()):
             matched_lines.append(f"{target_month}/{d:02d}：{schedule_map[d]}")
@@ -179,7 +157,6 @@ def robust_extract_schedule(_img_np):
         if matched_lines:
             return "\n".join(matched_lines)
             
-        # 終極備援：若無任何配對，但抓得到零星班別字母，直接列出供校對
         fallback_words = re.findall(r'\b[ABC代HOSabc]\b', full_blob)
         if fallback_words:
             st.info("💡 系統已為您捕捉到照片內散落的班別代號，請在下方手動加上日期。")
@@ -213,7 +190,7 @@ st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
 st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`4/21：B`）。")
 user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250, placeholder="範例格式：\n4/21：B\n4/22：代A\n5/01：C")
 
-# 在步驟2和步驟3之間的新增確認按鈕
+# 在步驟2 and 步驟3之間的確認按鈕
 col_btn1, col_btn2 = st.columns([2, 1])
 with col_btn1:
     if st.button("👉 確認上方班表內容無誤，進行下一步驟", type="primary"):
@@ -292,7 +269,6 @@ def draw_calendar_image(schedule_data, year):
             
             if day in schedule_data[month]:
                 shift = schedule_data[month][day]
-                # 統一轉成大寫進行比對與渲染
                 shift_upper = shift.upper()
                 if 'A' in shift_upper and '代' not in shift:
                     bg_color = "#FFE082"
