@@ -13,7 +13,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("透過上傳大班表照片，系統將鎖定工號【26811】的橫向排班數據，自動過濾其餘同仁數據，精準產出個人專屬行事曆。")
+st.write("已針對【一格內上到下】的垂直結構優化辨識邏輯。系統將精準鎖定工號【26811】的數據流。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -29,8 +29,8 @@ def load_online_font():
 
 font_ttf_path = load_online_font()
 
-# 2. 側邊欄：設定班別與時間對照 + 強制月份選擇
-st.sidebar.header("⚙️ 班別與週期配置")
+# 2. 側邊欄：標準化配置
+st.sidebar.header("⚙️ 班別與時間配置")
 time_A = st.sidebar.text_input("早班 (A)", "08:00 - 16:00")
 time_B = st.sidebar.text_input("中班 / 小夜班 (B)", "16:00 - 24:00")
 time_C = st.sidebar.text_input("夜班 / 大夜班 (C)", "00:00 - 08:00")
@@ -50,7 +50,6 @@ uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", ty
 
 img_file = uploaded_file
 
-# 初始化 Session State
 if 'rotation_angle' not in st.session_state:
     st.session_state.rotation_angle = 0
 if 'last_img_name' not in st.session_state:
@@ -63,7 +62,6 @@ if img_file is not None and img_file.name != st.session_state.last_img_name:
     st.session_state.last_img_name = img_file.name
     st.session_state.step2_confirmed = False
 
-# 處理圖片旋轉邏輯
 opencv_image = None
 if img_file is not None:
     file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
@@ -93,28 +91,29 @@ if img_file is not None:
         opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
-    st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
+    st.image(preview_rgb, caption="已調正之班表預覽", use_container_width=True)
 
 
-# 🎯 核心辨識邏輯：鎖定工號「26811」專屬橫向過濾演算法
-def robust_extract_id_schedule(_img_np, base_m, last_m_days):
+# 🎯 核心辨識邏輯：專攻「一格內上到下」垂直細節與工號鎖定
+def robust_extract_vertical_schedule(_img_np, base_m, last_m_days):
     try:
         import pytesseract
         
-        # 影像優化預處理
+        # 影像增強：二值化與對比度提升，利於垂直多行辨識
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 7)
+        gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 5)
         
+        # 使用 PSM 11 (Sparse text) 或 PSM 6，此處維持 6 但搭配更寬鬆的字元重組
         pil_img = Image.fromarray(thresh)
         raw_text = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 6')
         
+        # 建立完整的化驗科專用排班代碼庫
         valid_shifts = [
             "AH", "AO", "AS", "BH", "BO", "BS", "CH", "CO", "CS",
             "代A", "代B", "代C", "A", "B", "C", "H", "O", "S"
         ]
 
-        # 將文本按行切分，尋找包含工號 26811 的那一橫行
         lines = raw_text.split('\n')
         target_line_text = ""
         
@@ -123,33 +122,51 @@ def robust_extract_id_schedule(_img_np, base_m, last_m_days):
                 target_line_text = line
                 break
                 
-        # 如果整張圖找不到該工號，使用全文字流作為備援
-        if not target_line_text:
-            tokens = raw_text.split()
-        else:
-            tokens = target_line_text.split()
+        # 垂直與橫向混合標記清洗
+        raw_tokens = target_line_text.split() if target_line_text else raw_text.split()
+        
+        # 進行複合代碼（例如代A、AH）的膠合重組
+        cleaned_tokens = []
+        temp_token = ""
+        for t in raw_tokens:
+            t_clean = t.strip().upper()
+            if t_clean in ["代", "A", "B", "C", "H", "O", "S"]:
+                if temp_token == "代" and t_clean in ["A", "B", "C"]:
+                    cleaned_tokens.append(temp_token + t_clean)
+                    temp_token = ""
+                elif t_clean == "代":
+                    temp_token = "代"
+                elif temp_token in ["A", "B", "C"] and t_clean in ["H", "O", "S"]:
+                    cleaned_tokens.append(temp_token + t_clean)
+                    temp_token = ""
+                else:
+                    if temp_token:
+                        cleaned_tokens.append(temp_token)
+                    temp_token = t_clean
+            else:
+                if temp_token:
+                    cleaned_tokens.append(temp_token)
+                    temp_token = ""
+                # 直接比對完整代碼
+                for vs in valid_shifts:
+                    if vs in t_clean:
+                        cleaned_tokens.append(vs)
+                        break
+        if temp_token:
+            cleaned_tokens.append(temp_token)
 
+        # 再次過濾確保留在清單內
+        found_shifts = [tok for tok in cleaned_tokens if tok in valid_shifts]
+        
         extracted_dict = {}
-        found_shifts = []
-        
-        # 收集該行所有合法的班別代碼
-        for t in tokens:
-            t = t.strip().upper()
-            for vs in valid_shifts:
-                if vs == t or vs == re.sub(r'[^A-Z\u4e00-\u9fa5]', '', t):
-                    found_shifts.append(vs)
-                    break
-        
         next_m_val = base_m + 1 if base_m < 12 else 1
         
-        # 將抓到的班別，按照「21日到月底」再到「1日到20日」的順序填入字典
+        # 精準依序填入字典
         idx = 0
-        # 填入上個月 21 至月底
         for d in range(21, last_m_days + 1):
             if idx < len(found_shifts):
                 extracted_dict[(base_m, d)] = found_shifts[idx]
                 idx += 1
-        # 填入下個月 1 至 20 日
         for d in range(1, 21):
             if idx < len(found_shifts):
                 extracted_dict[(next_m_val, d)] = found_shifts[idx]
@@ -163,62 +180,48 @@ def robust_extract_id_schedule(_img_np, base_m, last_m_days):
 ocr_data_dict = {}
 found_id = False
 if opencv_image is not None:
-    with st.spinner(f"🔍 正在班表中精準定位工號【26811】的排班數據線..."):
-        ocr_data_dict, found_id = robust_extract_id_schedule(opencv_image, target_base_month, last_month_total_days)
+    with st.spinner(f"🔍 正在依據【垂直格內結構】清洗工號 26811 的排班代碼..."):
+        ocr_data_dict, found_id = robust_extract_vertical_schedule(opencv_image, target_base_month, last_month_total_days)
         if found_id:
-            st.success("🎯 成功定位工號【26811】的排班數據！其餘同仁班表已自動過濾。")
+            st.success("🎯 成功鎖定工號【26811】並依垂直序列解析完畢！")
         else:
-            st.warning("⚠️ 未能自動在圖中辨識出工號「26811」字樣。系統已為您建立標準日期框架，請在下方手動微調校對。")
+            st.warning("⚠️ 未能自動識別工號。系統已鋪設日期框架，請手動確認代碼。")
 
-# 4. 📝 步驟二：純文字班表確認與核對區
+# 4. 📝 步驟二：確認與人工修正
 st.markdown("---")
 st.subheader("📝 步驟二：工號【26811】排班核對與人工修正")
-st.markdown(f"**💡 請核對下方【26811】個人的排班。如果有漏讀，直接把該日期的 `O` 改成正確班別即可！**")
+st.markdown("**💡 請檢查下方代碼。若有不符，直接修改該日期後方的代碼（例如將 `O` 改為 `A` 或 `AH`）即可！**")
 
 merged_lines = []
-# 上個月 21 日至月底
 for d in range(21, last_month_total_days + 1):
     shift_val = ocr_data_dict.get((target_base_month, d), "O")
     merged_lines.append(f"{target_base_month}/{d:02d}：{shift_val}")
 
-# 下個月 1 日至 20 日
 for d in range(1, 21):
     shift_val = ocr_data_dict.get((next_m, d), "O")
     merged_lines.append(f"{next_m}/{d:02d}：{shift_val}")
 
 final_placeholder_text = "\n".join(merged_lines)
-user_input = st.text_area("工號 26811 個人專屬排班核對欄：", value=final_placeholder_text, height=350)
+user_input = st.text_area("26811 個人排班文字校正欄：", value=final_placeholder_text, height=350)
 
-# 確認按鈕
-col_btn1, col_btn2 = st.columns([2, 1])
-with col_btn1:
-    if st.button("👉 確認【26811】班表無誤，繪製月行事曆圖檔", type="primary"):
-        st.session_state.step2_confirmed = True
-with col_btn2:
-    if st.session_state.step2_confirmed:
-        st.success("✅ 狀態：已確認")
-    else:
-        st.info("⏳ 狀態：待確認")
+if st.button("👉 確認班表內容無誤，繪製高質感月行事曆", type="primary"):
+    st.session_state.step2_confirmed = True
 
-# 核心解析邏輯
 def parse_schedule(text):
     schedule_data = {}
     lines = text.strip().split('\n')
-    
     for line in lines:
         match = re.search(r'(\d+)/(\d+).*?[:：\s]\s*([A-Za-z0-9\u4e00-\u9fa5]+)', line)
         if match:
             month = int(match.group(1))
             day = int(match.group(2))
             shift_type = match.group(3).strip()
-            
             if month not in schedule_data:
                 schedule_data[month] = {}
             schedule_data[month][day] = shift_type
-            
     return schedule_data, current_year
 
-# 5. 🎨 核心：高質感跨月型行事曆畫布繪製器
+# 5. 🎨 核心：行事曆畫布繪製器
 def draw_calendar_image(schedule_data, year):
     img = Image.new("RGB", (620, 960), "#FFFFFF")
     draw = ImageDraw.Draw(img)
@@ -231,12 +234,11 @@ def draw_calendar_image(schedule_data, year):
     else:
         font_title = font_subtitle = font_text = font_shift = ImageFont.load_default()
 
-    # 外框
     draw.rectangle([(15, 15), (605, 945)], outline="#E0E0E0", width=2)
     draw.text((35, 35), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
     draw.text((35, 60), "技術處化驗科 ─ 工號 26811 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
-    # 看板色彩圖例
+    # 圖例區
     draw.rectangle([(35, 90), (585, 155)], fill="#F5F5F7")
     draw.text((45, 96), "☀️ A/早班加班: 黃/橘 | ⛅ B/中班加班: 藍/靛 | 🌙 C/夜班加班: 綠/深綠", fill="#1D1D1F", font=font_text)
     draw.text((45, 115), "🏖️ H、O、S、代A、代B、代C : 皆歸屬 [休假/放假] (灰色)", fill="#1D1D1F", font=font_text)
@@ -246,10 +248,8 @@ def draw_calendar_image(schedule_data, year):
     
     for month in sorted(schedule_data.keys()):
         draw.rectangle([(35, y_offset), (585, y_offset + 25)], fill="#E8E8ED")
-        
         has_late_days = any(d >= 21 for d in schedule_data[month].keys())
         range_str = " (21日 至 月底)" if has_late_days else " (01日 至 20日)"
-            
         draw.text((45, y_offset + 4), f"{year}年 {month:02d}月{range_str}", fill="#1D1D1F", font=font_subtitle)
         y_offset += 32
         
@@ -261,7 +261,6 @@ def draw_calendar_image(schedule_data, year):
         first_day = datetime.date(year, month, 1)
         blank_cells = (first_day.weekday() + 1) % 7
         total_days = calendar.monthrange(year, month)[1]
-        
         current_cell = blank_cells
         x_start = 35
         
@@ -273,67 +272,49 @@ def draw_calendar_image(schedule_data, year):
             box_x2 = box_x1 + 72
             box_y2 = box_y1 + 52
             
-            should_draw = False
-            if has_late_days and day >= 21:
-                should_draw = True
-            elif not has_late_days and day <= 20:
-                should_draw = True
+            should_draw = (has_late_days and day >= 21) or (not has_late_days and day <= 20)
                 
             if should_draw:
                 draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill="#F5F5F7")
                 draw.text((box_x1 + 5, box_y1 + 4), str(day), fill="#1D1D1F", font=font_text)
                 
                 if day in schedule_data[month]:
-                    shift = schedule_data[month][day].strip()
-                    s_upper = shift.upper()
+                    shift = schedule_data[month][day].strip().upper()
                     
-                    if s_upper in ["AH", "AO", "AS"]:    # 早班加班
-                        bg_color = "#FFB74D" 
-                    elif s_upper in ["BH", "BO", "BS"]:  # 中班加班
-                        bg_color = "#4FC3F7"
-                    elif s_upper in ["CH", "CO", "CS"]:  # 夜班加班
-                        bg_color = "#81C784"
-                    elif s_upper == 'A':                 # 標準早班
-                        bg_color = "#FFF176"
-                    elif s_upper == 'B':                 # 標準中班
-                        bg_color = "#E1F5FE"
-                    elif s_upper == 'C':                 # 標準夜班
-                        bg_color = "#E8F5E9"
-                    elif s_upper in ["H", "O", "S", "代A", "代B", "代C"]: # 休假
-                        bg_color = "#E0E0E0"
-                    else:
-                        bg_color = "#ECEFF1"
+                    # 顏色分配邏輯
+                    if shift in ["AH", "AO", "AS"]: bg_color = "#FFB74D" 
+                    elif shift in ["BH", "BO", "BS"]: bg_color = "#4FC3F7"
+                    elif shift in ["CH", "CO", "CS"]: bg_color = "#81C784"
+                    elif shift == 'A': bg_color = "#FFF176"
+                    elif shift == 'B': bg_color = "#E1F5FE"
+                    elif shift == 'C': bg_color = "#E8F5E9"
+                    elif shift in ["H", "O", "S", "代A", "代B", "代C"]: bg_color = "#E0E0E0"
+                    else: bg_color = "#ECEFF1"
                         
                     draw.rectangle([(box_x1 + 4, box_y1 + 20), (box_x2 - 4, box_y2 - 4)], fill=bg_color)
                     draw.text((box_x1 + 6, box_y1 + 26), shift, fill="#1D1D1F", font=font_shift)
             current_cell += 1
-            
-        rows_count = (current_cell - 1) // 7 + 1
-        y_offset += rows_count * 60 + 12
+        y_offset += ((current_cell - 1) // 7 + 1) * 60 + 12
     return img
 
-# 6. 🔓 步驟三：行事曆生成與圖檔下載
-if st.session_state.step2_confirmed:
-    if user_input.strip():
-        try:
-            parsed_data, year_val = parse_schedule(user_input)
-            if parsed_data:
-                st.markdown("---")
-                st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
-                
-                generated_img = draw_calendar_image(parsed_data, year_val)
-                img_buffer = io.BytesIO()
-                generated_img.save(img_buffer, format="PNG")
-                img_bytes = img_buffer.getvalue()
-                
-                st.image(img_bytes, caption=f"已成功建立工號 26811 個人專屬排班看板", use_container_width=True)
-                st.download_button(
-                    label="📥 點此下載工號 26811 專屬月行事曆 PNG 圖檔",
-                    data=img_bytes,
-                    file_name=f"化驗科排班行事曆_26811_{target_base_month}月21日至下月20日.png",
-                    mime="image/png"
-                )
-            else:
-                st.error("輸入內容解析失敗。")
-        except Exception as e:
-            st.error(f"行事曆生成失敗: {e}")
+# 6. 🔓 生成與下載
+if st.session_state.step2_confirmed and user_input.strip():
+    try:
+        parsed_data, year_val = parse_schedule(user_input)
+        if parsed_data:
+            st.markdown("---")
+            st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
+            generated_img = draw_calendar_image(parsed_data, year_val)
+            img_buffer = io.BytesIO()
+            generated_img.save(img_buffer, format="PNG")
+            img_bytes = img_buffer.getvalue()
+            
+            st.image(img_bytes, caption="已成功建立 26811 專屬垂直最佳化畫布", use_container_width=True)
+            st.download_button(
+                label="📥 點此下載工號 26811 專屬月行事曆 PNG 圖檔",
+                data=img_bytes,
+                file_name=f"化驗科排班行事曆_26811_{target_base_month}月21日至下月20日.png",
+                mime="image/png"
+            )
+    except Exception as e:
+        st.error(f"行事曆生成失敗: {e}")
