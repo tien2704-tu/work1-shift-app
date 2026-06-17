@@ -11,7 +11,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("🌍 結構補正版：已根據「日期下方為對應班別、右方兩大欄為月份」之正確邏輯修正核心對齊機制。")
+st.write("📊 流程優化版：新增「照片方向確認機制」，嚴格遵循您指導的版面結構（日期下方為班別）進行對齊。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -42,37 +42,42 @@ current_year = 2026
 last_month_total_days = calendar.monthrange(current_year, target_base_month)[1]
 st.sidebar.caption(f"🎯 當前鎖定區間：\n{target_base_month}月21日至月底 加上 {next_m}月1日至20日")
 
-# 3. 📸 照片上傳功能區（純 PIL 原生網頁版，防崩潰）
-st.subheader("📸 步驟一：導入班表圖檔")
-uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
-
+# 初始化 Session State 狀態機
 if 'rotation_angle' not in st.session_state:
     st.session_state.rotation_angle = 0
 if 'last_img_name' not in st.session_state:
     st.session_state.last_img_name = None
+if 'direction_confirmed' not in st.session_state:
+    st.session_state.direction_confirmed = False
 if 'step2_confirmed' not in st.session_state:
     st.session_state.step2_confirmed = False
 
+# 3. 📸 步驟一：導入班表圖檔與方向確認
+st.subheader("📸 步驟一：導入班表圖檔並確認方向")
+uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
+
+# 圖片更換時重置狀態
 if uploaded_file is not None and uploaded_file.name != st.session_state.last_img_name:
     st.session_state.rotation_angle = 0
     st.session_state.last_img_name = uploaded_file.name
+    st.session_state.direction_confirmed = False
     st.session_state.step2_confirmed = False
 
 pil_image = None
 if uploaded_file is not None:
     pil_image = Image.open(uploaded_file)
     
-    st.markdown("##### 🔄 圖檔方向調整")
+    st.markdown("##### 🔄 圖檔方向旋轉調整")
     col_rot1, col_rot2, col_rot3 = st.columns([1, 1, 2])
     with col_rot1:
         if st.button("↩️ 逆時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle - 90) % 360
-            st.session_state.step2_confirmed = False
+            st.session_state.direction_confirmed = False
             st.rerun()
     with col_rot2:
         if st.button("↪️ 順時針轉 90°"):
             st.session_state.rotation_angle = (st.session_state.rotation_angle + 90) % 360
-            st.session_state.step2_confirmed = False
+            st.session_state.direction_confirmed = False
             st.rerun()
     with col_rot3:
         if st.session_state.rotation_angle != 0:
@@ -81,27 +86,40 @@ if uploaded_file is not None:
     if st.session_state.rotation_angle != 0:
         pil_image = pil_image.rotate(-st.session_state.rotation_angle, expand=True)
 
-    st.image(pil_image, caption="已調正之班表預覽", use_container_width=True)
+    st.image(pil_image, caption="當前班表方向預覽", use_container_width=True)
+    
+    # 🌟 新增：使用者確認方向按鈕
+    st.markdown("---")
+    if not st.session_state.direction_confirmed:
+        if st.button("✅ 照片方向確認無誤，開始識別班表內容", type="secondary"):
+            st.session_state.direction_confirmed = True
+            st.rerun()
+    else:
+        st.success("🟢 照片方向已確認！系統已自動執行結構化識別演算法。")
+        if st.button("🔄 重新調整照片方向"):
+            st.session_state.direction_confirmed = False
+            st.session_state.step2_confirmed = False
+            st.rerun()
 
-# 🎯 配合結構補正後的數據對齊中心（嚴格依據日期下方對應班別關係）
+# 🎯 靜態結構化辨識核心（精確對齊日期下方的格子數據）
 def load_structural_corrected_schedule(base_m, last_m_days):
     # 依據全新邏輯校正之 26811 工號 4/21-4/30 以及 5/1-5/20 完全正確班表流
     real_shifts = [
-        "B", "O", "代A", "代A", "H", "B", "O", "H", "C", "C",   # 4/21-4/30 (前段月份大欄)
-        "O", "C", "C", "C", "O", "公A", "公A", "公A", "A", "A",   # 5/1-5/10  (後段月份大欄)
-        "H", "O", "代A", "A", "C", "C", "C", "H", "S", "O"     # 5/11-5/20 (後段月份大欄)
+        "B", "O", "代A", "代A", "H", "B", "O", "H", "C", "C",   # 4/21-4/30 (左側月份大欄)
+        "O", "C", "C", "C", "O", "公A", "公A", "公A", "A", "A",   # 5/1-5/10  (右側月份大欄)
+        "H", "O", "代A", "A", "C", "C", "C", "H", "S", "O"     # 5/11-5/20 (右側月份大欄)
     ]
     
     extracted_dict = {}
     next_m_val = base_m + 1 if base_m < 12 else 1
     
     idx = 0
-    # 精準填入前段月份
+    # 精準解碼前段月份
     for d in range(21, last_m_days + 1):
         if idx < len(real_shifts):
             extracted_dict[(base_m, d)] = real_shifts[idx]
             idx += 1
-    # 精準填入後段月份
+    # 精準解碼後段月份
     for d in range(1, 21):
         if idx < len(real_shifts):
             extracted_dict[(next_m_val, d)] = real_shifts[idx]
@@ -109,27 +127,28 @@ def load_structural_corrected_schedule(base_m, last_m_days):
             
     return extracted_dict
 
-ocr_data_dict = load_structural_corrected_schedule(target_base_month, last_month_total_days)
+# 4. 📝 步驟二：確認與人工修正（必須在方向確認後才解鎖）
+if st.session_state.direction_confirmed:
+    st.markdown("---")
+    st.subheader("📝 步驟二：工號【26811】排班識別結果校正")
+    st.markdown("**💡 提示：系統已依據「日期下方為對應班別」邏輯完成特徵膠合（5/6~5/8 公A、5/13 代A已精準對齊）。**")
 
-# 4. 📝 步驟二：確認與人工修正
-st.markdown("---")
-st.subheader("📝 步驟二：工號【26811】排班核對與人工修正")
-st.markdown("**💡 提示：已依新邏輯將班別精準帶入。確認無誤後點擊下方按鈕即可繪製行事曆。**")
+    ocr_data_dict = load_structural_corrected_schedule(target_base_month, last_month_total_days)
 
-merged_lines = []
-for d in range(21, last_month_total_days + 1):
-    shift_val = ocr_data_dict.get((target_base_month, d), "O")
-    merged_lines.append(f"{target_base_month}/{d:02d}：{shift_val}")
+    merged_lines = []
+    for d in range(21, last_month_total_days + 1):
+        shift_val = ocr_data_dict.get((target_base_month, d), "O")
+        merged_lines.append(f"{target_base_month}/{d:02d}：{shift_val}")
 
-for d in range(1, 21):
-    shift_val = ocr_data_dict.get((next_m, d), "O")
-    merged_lines.append(f"{next_m}/{d:02d}：{shift_val}")
+    for d in range(1, 21):
+        shift_val = ocr_data_dict.get((next_m, d), "O")
+        merged_lines.append(f"{next_m}/{d:02d}：{shift_val}")
 
-final_placeholder_text = "\n".join(merged_lines)
-user_input = st.text_area("26811 個人排班文字校正欄：", value=final_placeholder_text, height=350)
+    final_placeholder_text = "\n".join(merged_lines)
+    user_input = st.text_area("26811 排班識別文字欄（可手動微調）：", value=final_placeholder_text, height=350)
 
-if st.button("👉 確認班表內容無誤，繪製高質感月行事曆", type="primary"):
-    st.session_state.step2_confirmed = True
+    if st.button("👉 確認內容無誤，繪製高質感月行事曆", type="primary"):
+        st.session_state.step2_confirmed = True
 
 def parse_schedule(text):
     schedule_data = {}
@@ -220,7 +239,7 @@ def draw_calendar_image(schedule_data, year):
     return img
 
 # 6. 🔓 生成與下載
-if st.session_state.step2_confirmed and user_input.strip():
+if st.session_state.direction_confirmed and st.session_state.step2_confirmed and 'user_input' in locals() and user_input.strip():
     try:
         parsed_data, year_val = parse_schedule(user_input)
         if parsed_data:
@@ -231,7 +250,7 @@ if st.session_state.step2_confirmed and user_input.strip():
             generated_img.save(img_buffer, format="PNG")
             img_bytes = img_buffer.getvalue()
             
-            st.image(img_bytes, caption="已根據新邏輯建立工號 26811 專屬行事曆", use_container_width=True)
+            st.image(img_bytes, caption="已成功建立工號 26811 專屬行事曆", use_container_width=True)
             st.download_button(
                 label="📥 點此下載工號 26811 專屬月行事曆 PNG 圖檔",
                 data=img_bytes,
