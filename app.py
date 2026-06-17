@@ -3,8 +3,6 @@ import streamlit as st
 import datetime
 import re
 import calendar
-import cv2
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import io
 import urllib.request
@@ -13,7 +11,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("🌍 純網頁免安裝版：已移除所有本地 OCR 軟體依賴，提供 100% 穩定行事曆生成體驗。")
+st.write("🌍 輕量網頁版：已完全移除 OpenCV 與本地軟體依賴，確保網頁環境 100% 正常執行。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -44,11 +42,9 @@ current_year = 2026
 last_month_total_days = calendar.monthrange(current_year, target_base_month)[1]
 st.sidebar.caption(f"🎯 當前鎖定區間：\n{target_base_month}月21日至月底 加上 {next_m}月1日至20日")
 
-# 3. 📸 照片上傳功能區 (純預覽，不執行本地 OCR，免去軟體錯誤)
+# 3. 📸 照片上傳功能區（改用原生 PIL，100% 避免環境崩潰）
 st.subheader("📸 步驟一：導入班表圖檔")
 uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
-
-img_file = uploaded_file
 
 if 'rotation_angle' not in st.session_state:
     st.session_state.rotation_angle = 0
@@ -57,15 +53,15 @@ if 'last_img_name' not in st.session_state:
 if 'step2_confirmed' not in st.session_state:
     st.session_state.step2_confirmed = False
 
-if img_file is not None and img_file.name != st.session_state.last_img_name:
+if uploaded_file is not None and uploaded_file.name != st.session_state.last_img_name:
     st.session_state.rotation_angle = 0
-    st.session_state.last_img_name = img_file.name
+    st.session_state.last_img_name = uploaded_file.name
     st.session_state.step2_confirmed = False
 
-opencv_image = None
-if img_file is not None:
-    file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
-    opencv_image = cv2.imdecode(file_bytes, 1)
+pil_image = None
+if uploaded_file is not None:
+    # 使用純 PIL 讀取圖片，不經過 OpenCV
+    pil_image = Image.open(uploaded_file)
     
     st.markdown("##### 🔄 圖檔方向調整")
     col_rot1, col_rot2, col_rot3 = st.columns([1, 1, 2])
@@ -83,19 +79,14 @@ if img_file is not None:
         if st.session_state.rotation_angle != 0:
             st.caption(f"目前已旋轉：{st.session_state.rotation_angle}°")
 
-    if st.session_state.rotation_angle == 90:
-        opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_90_CLOCKWISE)
-    elif st.session_state.rotation_angle == 180:
-        opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_180)
-    elif st.session_state.rotation_angle == 270:
-        opencv_image = cv2.rotate(opencv_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if st.session_state.rotation_angle != 0:
+        # 使用 PIL 原生旋轉（逆時針，所以要加負號轉回來）
+        pil_image = pil_image.rotate(-st.session_state.rotation_angle, expand=True)
 
-    preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
-    st.image(preview_rgb, caption="已調正之班表預覽", use_container_width=True)
+    st.image(pil_image, caption="已調正之班表預覽", use_container_width=True)
 
-# 🎯 智慧靜態數據載入（100% 免除本地軟體環境衝突）
+# 🎯 靜態數據載入（安全穩固）
 def load_fixed_schedule(base_m, last_m_days):
-    # 內建工號 26811 的 4/21 - 5/20 完全正確班表特徵（含公A、代A）
     real_shifts = [
         "B", "O", "代A", "代A", "H", "B", "O", "H", "C", "C",   # 4/21-4/30
         "O", "C", "C", "C", "O", "公A", "公A", "公A", "A", "A",   # 5/1-5/10
@@ -117,7 +108,6 @@ def load_fixed_schedule(base_m, last_m_days):
             
     return extracted_dict
 
-# 載入核心數據
 ocr_data_dict = load_fixed_schedule(target_base_month, last_month_total_days)
 
 # 4. 📝 步驟二：確認與人工修正
@@ -135,7 +125,7 @@ for d in range(1, 21):
     merged_lines.append(f"{next_m}/{d:02d}：{shift_val}")
 
 final_placeholder_text = "\n".join(merged_lines)
-user_input = st.text_area("26811 個人排班文字校正欄：", value=final_placeholder_text, height=350)
+user_input = st.text_area("26811 個人排班文字校or欄：", value=final_placeholder_text, height=350)
 
 if st.button("👉 確認班表內容無誤，繪製高質感月行事曆", type="primary"):
     st.session_state.step2_confirmed = True
@@ -171,7 +161,6 @@ def draw_calendar_image(schedule_data, year):
     draw.text((35, 35), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
     draw.text((35, 60), "技術處化驗科 ─ 工號 26811 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
-    # 圖例區
     draw.rectangle([(35, 90), (585, 155)], fill="#F5F5F7")
     draw.text((45, 96), "☀️ A/早班加班: 橘色 | ⛅ B/中班加班: 藍色 | 🌙 C/夜班加班: 綠色", fill="#1D1D1F", font=font_text)
     draw.text((45, 115), "🏖️ H, O, S, 代A, 代B, 代C, 公A... : 皆歸屬 [休假/公假] (灰色看板)", fill="#1D1D1F", font=font_text)
@@ -214,7 +203,6 @@ def draw_calendar_image(schedule_data, year):
                 if day in schedule_data[month]:
                     shift = schedule_data[month][day].strip().upper()
                     
-                    # 顏色分配
                     if shift in ["AH", "AO", "AS"]: bg_color = "#FFB74D" 
                     elif shift in ["BH", "BO", "BS"]: bg_color = "#4FC3F7"
                     elif shift in ["CH", "CO", "CS"]: bg_color = "#81C784"
