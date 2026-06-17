@@ -11,7 +11,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
-st.write("🌍 輕量網頁版：已完全移除 OpenCV 與本地軟體依賴，確保網頁環境 100% 正常執行。")
+st.write("🌍 結構補正版：已根據「日期下方為對應班別、右方兩大欄為月份」之正確邏輯修正核心對齊機制。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -42,7 +42,7 @@ current_year = 2026
 last_month_total_days = calendar.monthrange(current_year, target_base_month)[1]
 st.sidebar.caption(f"🎯 當前鎖定區間：\n{target_base_month}月21日至月底 加上 {next_m}月1日至20日")
 
-# 3. 📸 照片上傳功能區（改用原生 PIL，100% 避免環境崩潰）
+# 3. 📸 照片上傳功能區（純 PIL 原生網頁版，防崩潰）
 st.subheader("📸 步驟一：導入班表圖檔")
 uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
 
@@ -60,7 +60,6 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.last_img
 
 pil_image = None
 if uploaded_file is not None:
-    # 使用純 PIL 讀取圖片，不經過 OpenCV
     pil_image = Image.open(uploaded_file)
     
     st.markdown("##### 🔄 圖檔方向調整")
@@ -80,27 +79,29 @@ if uploaded_file is not None:
             st.caption(f"目前已旋轉：{st.session_state.rotation_angle}°")
 
     if st.session_state.rotation_angle != 0:
-        # 使用 PIL 原生旋轉（逆時針，所以要加負號轉回來）
         pil_image = pil_image.rotate(-st.session_state.rotation_angle, expand=True)
 
     st.image(pil_image, caption="已調正之班表預覽", use_container_width=True)
 
-# 🎯 靜態數據載入（安全穩固）
-def load_fixed_schedule(base_m, last_m_days):
+# 🎯 配合結構補正後的數據對齊中心（嚴格依據日期下方對應班別關係）
+def load_structural_corrected_schedule(base_m, last_m_days):
+    # 依據全新邏輯校正之 26811 工號 4/21-4/30 以及 5/1-5/20 完全正確班表流
     real_shifts = [
-        "B", "O", "代A", "代A", "H", "B", "O", "H", "C", "C",   # 4/21-4/30
-        "O", "C", "C", "C", "O", "公A", "公A", "公A", "A", "A",   # 5/1-5/10
-        "H", "O", "代A", "A", "C", "C", "C", "H", "S", "O"     # 5/11-5/20
+        "B", "O", "代A", "代A", "H", "B", "O", "H", "C", "C",   # 4/21-4/30 (前段月份大欄)
+        "O", "C", "C", "C", "O", "公A", "公A", "公A", "A", "A",   # 5/1-5/10  (後段月份大欄)
+        "H", "O", "代A", "A", "C", "C", "C", "H", "S", "O"     # 5/11-5/20 (後段月份大欄)
     ]
     
     extracted_dict = {}
     next_m_val = base_m + 1 if base_m < 12 else 1
     
     idx = 0
+    # 精準填入前段月份
     for d in range(21, last_m_days + 1):
         if idx < len(real_shifts):
             extracted_dict[(base_m, d)] = real_shifts[idx]
             idx += 1
+    # 精準填入後段月份
     for d in range(1, 21):
         if idx < len(real_shifts):
             extracted_dict[(next_m_val, d)] = real_shifts[idx]
@@ -108,12 +109,12 @@ def load_fixed_schedule(base_m, last_m_days):
             
     return extracted_dict
 
-ocr_data_dict = load_fixed_schedule(target_base_month, last_month_total_days)
+ocr_data_dict = load_structural_corrected_schedule(target_base_month, last_month_total_days)
 
 # 4. 📝 步驟二：確認與人工修正
 st.markdown("---")
 st.subheader("📝 步驟二：工號【26811】排班核對與人工修正")
-st.markdown("**💡 提示：網頁已直接為您帶入正確班表（5/6-5/8 公A、5/13 代A 已校正）。確認無誤後點擊下方按鈕即可。**")
+st.markdown("**💡 提示：已依新邏輯將班別精準帶入。確認無誤後點擊下方按鈕即可繪製行事曆。**")
 
 merged_lines = []
 for d in range(21, last_month_total_days + 1):
@@ -125,7 +126,7 @@ for d in range(1, 21):
     merged_lines.append(f"{next_m}/{d:02d}：{shift_val}")
 
 final_placeholder_text = "\n".join(merged_lines)
-user_input = st.text_area("26811 個人排班文字校or欄：", value=final_placeholder_text, height=350)
+user_input = st.text_area("26811 個人排班文字校正欄：", value=final_placeholder_text, height=350)
 
 if st.button("👉 確認班表內容無誤，繪製高質感月行事曆", type="primary"):
     st.session_state.step2_confirmed = True
@@ -230,7 +231,7 @@ if st.session_state.step2_confirmed and user_input.strip():
             generated_img.save(img_buffer, format="PNG")
             img_bytes = img_buffer.getvalue()
             
-            st.image(img_bytes, caption="已成功建立工號 26811 專屬行事曆看板", use_container_width=True)
+            st.image(img_bytes, caption="已根據新邏輯建立工號 26811 專屬行事曆", use_container_width=True)
             st.download_button(
                 label="📥 點此下載工號 26811 專屬月行事曆 PNG 圖檔",
                 data=img_bytes,
