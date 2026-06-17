@@ -35,7 +35,7 @@ time_A = st.sidebar.text_input("早班 (A)", "08:00 - 16:00")
 time_B = st.sidebar.text_input("中班 / 小夜班 (B)", "16:00 - 24:00")
 time_C = st.sidebar.text_input("夜班 / 大夜班 (C)", "00:00 - 08:00")
 
-# 3. 📸 照片上傳功能區（已取消手機拍照功能）
+# 3. 📸 照片上傳功能區
 st.subheader("📸 步驟一：導入班表圖檔")
 uploaded_file = st.file_uploader("請選擇班表照片 (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
 
@@ -115,13 +115,13 @@ def robust_extract_schedule(_img_np):
 
         # 4. 全局 Token 清洗與配對
         tokens = full_blob.split()
-        schedule_map = {}
+        extracted_data = [] # 儲存 (month, day, shift)
         pending_day = None
         valid_shifts = {"A", "B", "C", "代A", "H", "O", "S", "a", "b", "c"}
         
         for t in tokens:
             t = t.strip()
-            md_match = re.search(r'([45])[:/.\-_](\d{1,2})', t)
+            md_match = re.search(r'([451-2]{1,2})[:/.\-_](\d{1,2})', t)
             if md_match:
                 m_val = int(md_match.group(1))
                 d_val = int(md_match.group(2))
@@ -147,21 +147,24 @@ def robust_extract_schedule(_img_np):
                 elif "S" in t: shift_clean = "S"
                 
                 if pending_day and shift_clean:
-                    schedule_map[pending_day] = shift_clean
+                    # 根據21號邏輯自動分配月份歸屬
+                    if pending_day >= 21:
+                        extracted_data.append((target_month, pending_day, shift_clean))
+                    else:
+                        # 1~20號屬於下個月
+                        next_m = target_month + 1 if target_month < 12 else 1
+                        extracted_data.append((next_m, pending_day, shift_clean))
                     pending_day = None 
                     
+        # 排序並輸出
+        extracted_data.sort(key=lambda x: (x[0], x[1]))
         matched_lines = []
-        for d in sorted(schedule_map.keys()):
-            matched_lines.append(f"{target_month}/{d:02d}：{schedule_map[d]}")
+        for m, d, s in extracted_data:
+            matched_lines.append(f"{m}/{d:02d}：{s}")
             
         if matched_lines:
             return "\n".join(matched_lines)
             
-        fallback_words = re.findall(r'\b[ABC代HOSabc]\b', full_blob)
-        if fallback_words:
-            st.info("💡 系統已為您捕捉到照片內散落的班別代號，請在下方手動加上日期。")
-            return "\n".join([f"{target_month}/{i+1}：{w.upper()}" for i, w in enumerate(fallback_words[:30])])
-
         return ""
     except Exception as e:
         err_msg = str(e)
@@ -180,17 +183,17 @@ if opencv_image is not None:
             st.success("✨ 班表內容處理完成！")
         else:
             extracted_text = ""
-            st.warning("⚠️ 由於照片格線及文字亂碼塊較明顯，未能全自動精準對齊。已為您將核對欄清空，請直接在下方手動貼上或輸入排班。")
+            st.warning("⚠️ 自動辨識未能完美對齊。已將核對欄清空，請參考提示格式手動輸入 21 號至下月 20 號之排班。")
 else:
     extracted_text = ""
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`4/21：B`）。")
-user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250, placeholder="範例格式：\n4/21：B\n4/22：代A\n5/01：C")
+st.caption("請確認排班範圍為當月 21 日至下月 20 日，格式：`4/21：B`。")
+user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250, placeholder="範例格式（跨月週期）：\n4/21：B\n4/30：C\n5/01：A\n5/20：代A")
 
-# 在步驟2 and 步驟3之間的確認按鈕
+# 確認按鈕
 col_btn1, col_btn2 = st.columns([2, 1])
 with col_btn1:
     if st.button("👉 確認上方班表內容無誤，進行下一步驟", type="primary"):
@@ -201,7 +204,7 @@ with col_btn2:
     else:
         st.info("⏳ 狀態：待確認")
 
-# 核心解析邏輯
+# 核心解析邏輯：過濾特定跨月區間
 def parse_schedule(text):
     schedule_data = {}
     lines = text.strip().split('\n')
@@ -213,12 +216,14 @@ def parse_schedule(text):
             month = int(match.group(1))
             day = int(match.group(2))
             shift_type = match.group(3).strip()
+            
             if month not in schedule_data:
                 schedule_data[month] = {}
             schedule_data[month][day] = shift_type
+            
     return schedule_data, current_year
 
-# 5. 🎨 核心：Python 後端高畫質圖片生成器
+# 5. 🎨 核心：Python 後端跨月型行事曆生成器
 def draw_calendar_image(schedule_data, year):
     img = Image.new("RGB", (620, 920), "#FFFFFF")
     draw = ImageDraw.Draw(img)
@@ -233,16 +238,25 @@ def draw_calendar_image(schedule_data, year):
 
     draw.rectangle([(15, 15), (605, 905)], outline="#E0E0E0", width=2)
     draw.text((35, 35), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
-    draw.text((35, 65), "技術處化驗科 ─ 個人排班月行事曆", fill="#424245", font=font_subtitle)
+    draw.text((35, 65), "技術處化驗科 ─ 個人排班月行事曆 (21日-20日)", fill="#424245", font=font_subtitle)
     
     draw.rectangle([(35, 95), (585, 150)], fill="#F5f5F7")
     draw.text((45, 103), f"A: 早班 ({time_A})   B: 中班 ({time_B})", fill="#1D1D1F", font=font_text)
     draw.text((45, 125), f"C: 夜班 ({time_C})   H/O/S/代班: 休假/公假", fill="#1D1D1F", font=font_text)
 
     y_offset = 175
+    
+    # 遍歷所有包含的月份
     for month in sorted(schedule_data.keys()):
         draw.rectangle([(35, y_offset), (585, y_offset + 25)], fill="#E8E8ED")
-        draw.text((45, y_offset + 4), f"{year}年 {month:02d}月", fill="#1D1D1F", font=font_subtitle)
+        
+        # 標明該月份呈現的精準日期區間
+        if any(d >= 21 for d in schedule_data[month].keys()):
+            range_str = " (21日 ─ 月底)"
+        else:
+            range_str = " (01日 ─ 20日)"
+            
+        draw.text((45, y_offset + 4), f"{year}年 {month:02d}月{range_str}", fill="#1D1D1F", font=font_subtitle)
         y_offset += 32
         
         weeks = ['日', '一', '二', '三', '四', '五', '六']
@@ -256,31 +270,44 @@ def draw_calendar_image(schedule_data, year):
         
         current_cell = blank_cells
         x_start = 35
+        
+        # 判斷此月該繪製哪一個區段
+        has_late_days = any(d >= 21 for d in schedule_data[month].keys())
+        
         for day in range(1, total_days + 1):
             col = current_cell % 7
             row = current_cell // 7
+            
             box_x1 = x_start + col * 79
             box_y1 = y_offset + row * 58
             box_x2 = box_x1 + 72
             box_y2 = box_y1 + 52
             
-            draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill="#F5F5F7")
-            draw.text((box_x1 + 5, box_y1 + 4), str(day), fill="#1D1D1F", font=font_text)
-            
-            if day in schedule_data[month]:
-                shift = schedule_data[month][day]
-                shift_upper = shift.upper()
-                if 'A' in shift_upper and '代' not in shift:
-                    bg_color = "#FFE082"
-                elif 'B' in shift_upper:
-                    bg_color = "#B3E5FC"
-                elif 'C' in shift_upper:
-                    bg_color = "#C8E6C9"
-                else:
-                    bg_color = "#E0E0E0"
-                    
-                draw.rectangle([(box_x1 + 4, box_y1 + 22), (box_x2 - 4, box_y2 - 4)], fill=bg_color)
-                draw.text((box_x1 + 8, box_y1 + 27), shift, fill="#1D1D1F", font=font_shift)
+            # 根據您的需求：只繪製對應區段的格子
+            should_draw = False
+            if has_late_days and day >= 21:
+                should_draw = True
+            elif not has_late_days and day <= 20:
+                should_draw = True
+                
+            if should_draw:
+                draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill="#F5F5F7")
+                draw.text((box_x1 + 5, box_y1 + 4), str(day), fill="#1D1D1F", font=font_text)
+                
+                if day in schedule_data[month]:
+                    shift = schedule_data[month][day]
+                    shift_upper = shift.upper()
+                    if 'A' in shift_upper and '代' not in shift:
+                        bg_color = "#FFE082"
+                    elif 'B' in shift_upper:
+                        bg_color = "#B3E5FC"
+                    elif 'C' in shift_upper:
+                        bg_color = "#C8E6C9"
+                    else:
+                        bg_color = "#E0E0E0"
+                        
+                    draw.rectangle([(box_x1 + 4, box_y1 + 22), (box_x2 - 4, box_y2 - 4)], fill=bg_color)
+                    draw.text((box_x1 + 8, box_y1 + 27), shift, fill="#1D1D1F", font=font_shift)
             current_cell += 1
             
         rows_count = (current_cell - 1) // 7 + 1
@@ -301,11 +328,11 @@ if st.session_state.step2_confirmed:
                 generated_img.save(img_buffer, format="PNG")
                 img_bytes = img_buffer.getvalue()
                 
-                st.image(img_bytes, caption="這是依據您確認後的內容所生成的最終平板風格排班圖", use_container_width=True)
+                st.image(img_bytes, caption="這是依據 21日-20日 跨月循環產出的最終行事曆圖檔", use_container_width=True)
                 st.download_button(
                     label="📥 點此下載排班月行事曆 PNG 圖檔",
                     data=img_bytes,
-                    file_name=f"排班行事曆_{year_val}年.png",
+                    file_name=f"排班行事曆_跨月週期_{year_val}年.png",
                     mime="image/png"
                 )
             else:
