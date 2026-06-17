@@ -11,7 +11,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 通用智慧排班月行事曆")
-st.write("📊 行程備註升級版：本版本已全面支援公假日與特殊行程識別！行事曆最下方將動態渲染「當月行程備註欄」。")
+st.write("📊 視覺精簡版：已完全移除上方的班別底色與時間配置圖例文字，畫面更純淨！")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -142,8 +142,7 @@ def generate_generic_grid_schedule(year, main_month):
         for idx, d in enumerate(range(1, 21)):
             if idx < len(m5_shifts): extracted_dict[(next_m_val, d)] = m5_shifts[idx]
         
-        # 🌟 自動識別並黏合最下方手寫行程備註
-        notes_list.append("5/6 ~ 5/8 牧廷 急救人員初訓")
+        notes_list.append("5/6 ~ 5/8 牧廷 急急人員初訓")
             
     else:
         generic_pattern = ["A", "B", "C", "O", "H", "S"]
@@ -168,7 +167,6 @@ if st.session_state.direction_confirmed:
     
     st.markdown(f"**📅 目前自動生成的排班區間為：{b_month}月21日 至 {n_month}月20日**")
 
-    # 建立雙欄位：左邊對齊班表，右邊編輯公假日行程
     col_layout1, col_layout2 = st.columns([3, 2])
     
     with col_layout1:
@@ -183,11 +181,10 @@ if st.session_state.direction_confirmed:
         user_input = st.text_area("🔧 26811 每日班別對齊核對：", value=final_placeholder_text, height=350)
 
     with col_layout2:
-        # 🌟 讓使用者直接確認或自由編輯大表最下方的行程說明
         default_notes_text = "\n".join(detected_notes) if detected_notes else "（暫無特殊公假行程，若有請在此輸入）"
         user_notes_input = st.text_area("📝 大表最下方行程行程備註（換行可輸入多條）：", value=default_notes_text, height=350)
 
-    if st.button("👉 確認內容無誤，繪製高質感月行事曆（含行程備註）", type="primary"):
+    if st.button("👉 確認內容無誤，繪製高質感月行事曆", type="primary"):
         st.session_state.step2_confirmed = True
 
 def parse_schedule(text):
@@ -204,10 +201,10 @@ def parse_schedule(text):
             schedule_data[month][day] = shift_type
     return schedule_data
 
-# 5. 🎨 核心：行事曆畫布繪製器（擴大底部，動態繪製行程說明）
+# 5. 🎨 核心：行事曆畫布繪製器（已徹底移除圖例說明文字，緊湊優化）
 def draw_calendar_image(schedule_data, year, notes_text):
-    # 將畫布高度從 960 擴大到 1080，預留底部行程面板
-    img = Image.new("RGB", (620, 1080), "#FFFFFF")
+    # 高度由 1080 精簡至 980，去除圖例後更緊湊
+    img = Image.new("RGB", (620, 980), "#FFFFFF")
     draw = ImageDraw.Draw(img)
     
     if font_ttf_path:
@@ -220,17 +217,14 @@ def draw_calendar_image(schedule_data, year, notes_text):
         font_title = font_subtitle = font_text = font_shift = font_note_title = ImageFont.load_default()
 
     # 外框線
-    draw.rectangle([(15, 15), (605, 1065)], outline="#E0E0E0", width=2)
+    draw.rectangle([(15, 15), (605, 965)], outline="#E0E0E0", width=2)
     draw.text((35, 35), "遠東新世紀股份有限公司 觀音化學纖維廠", fill="#1D1D1F", font=font_title)
     draw.text((35, 60), "技術處化驗科 ─ 工號 26811 個人排班月行事曆", fill="#424245", font=font_subtitle)
     
-    # 圖例面板
-    draw.rectangle([(35, 90), (585, 155)], fill="#F5F5F7")
-    draw.text((45, 96), "🔷 A/早班系列: 藍色 | 🟩 B/中班系列: 綠色 | 🟨 C/夜班系列: 黃色", fill="#1D1D1F", font=font_text)
-    draw.text((45, 115), "🏖️ H, O, S, 代班, 公假等字樣 : 皆歸屬 [一般公休假] (灰色看板)", fill="#1D1D1F", font=font_text)
-    draw.text((45, 134), f"時間配置: 早班:{time_A} | 中班:{time_B} | 夜班:{time_C}", fill="#424245", font=font_text)
+    # ❌ 舊版的圖例面板 rectangle 及其三行說明文字已完全移除
 
-    y_offset = 175
+    # 月曆起始點向上移，從原本的 175 調整到 95，填補移除圖例後的空白
+    y_offset = 95
     
     for month in sorted(schedule_data.keys()):
         draw.rectangle([(35, y_offset), (585, y_offset + 25)], fill="#E8E8ED")
@@ -283,12 +277,12 @@ def draw_calendar_image(schedule_data, year, notes_text):
             current_cell += 1
         y_offset += ((current_cell - 1) // 7 + 1) * 60 + 12
 
-    # 🌟 核心增強：動態繪製大表最下方的當月行程備註區
-    draw.rectangle([(35, 940), (585, 1045)], fill="#FFF3E0", outline="#FFE0B2", width=1)
-    draw.text((45, 948), "📝 當月排班大表 ─ 特殊行程與公假備註說明：", fill="#E65100", font=font_note_title)
+    # 當月行程備註區 (固定置於底部區塊)
+    draw.rectangle([(35, 840), (585, 945)], fill="#FFF3E0", outline="#FFE0B2", width=1)
+    draw.text((45, 848), "📝 當月排班大表 ─ 特殊行程與公假備註說明：", fill="#E65100", font=font_note_title)
     
     note_lines = notes_text.strip().split('\n')
-    note_y_offset = 972
+    note_y_offset = 872
     for n_line in note_lines:
         if n_line.strip():
             draw.text((45, note_y_offset), f"• {n_line.strip()}", fill="#2E2E2E", font=font_text)
@@ -304,18 +298,17 @@ if st.session_state.direction_confirmed and st.session_state.step2_confirmed and
             st.markdown("---")
             st.subheader("🖼️ 步驟三：行事曆生成與圖檔下載")
             
-            # 將右側編輯的備註傳入繪圖器中
             generated_img = draw_calendar_image(parsed_data, st.session_state.detected_year, user_notes_input)
             
             img_buffer = io.BytesIO()
             generated_img.save(img_buffer, format="PNG")
             img_bytes = img_buffer.getvalue()
             
-            st.image(img_bytes, caption=f"已成功生成包含當月特殊行程之月行事曆", use_container_width=True)
+            st.image(img_bytes, caption=f"已成功生成純淨版月行事曆", use_container_width=True)
             st.download_button(
-                label="📥 點此下載包含行程說明之專屬月行事曆 PNG 圖檔",
+                label="📥 點此下載專屬月行事曆 PNG 圖檔",
                 data=img_bytes,
-                file_name=f"化驗科排班行事曆_26811_{st.session_state.detected_month}月份_含行程.png",
+                file_name=f"化驗科排班行事曆_26811_{st.session_state.detected_month}月份_精簡版.png",
                 mime="image/png"
             )
     except Exception as e:
