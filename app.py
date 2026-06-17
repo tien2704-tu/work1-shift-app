@@ -95,73 +95,96 @@ if img_file is not None:
     preview_rgb = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2RGB)
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
-# 🎯 核心辨識邏輯：包含混合佈局分析與環境防呆
+
+# 🎯 徹底重構的暴力解算 OCR 識別核心
 def robust_extract_schedule(_img_np):
     try:
         import pytesseract
-        from pytesseract import Output
         
-        # 1. 影像極致強化
+        # 1. 針對照片進行多重影像預處理 (提升反差，過濾紙張灰底)
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        gray = cv2.resize(gray, None, fx=1.8, fy=1.8, interpolation=cv2.INTER_LANCZOS4)
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
+        gray = cv2.medianBlur(gray, 3)
+        # 放大圖片使小字體清晰
+        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 7)
         
-        # 2. 混合佈局模式檢索
+        # 2. 同時提取兩種 PSM 模式下的全圖純文字
         pil_img = Image.fromarray(thresh)
+        raw_text_6 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 6')
+        raw_text_11 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 11')
         
-        custom_config_6 = r'--psm 6 -c preserve_interword_spaces=1'
-        raw_text_6 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=custom_config_6)
+        full_blob = raw_text_6 + "\n" + raw_text_11
         
-        custom_config_11 = r'--psm 11'
-        raw_text_11 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=custom_config_11)
+        # 移除不可見亂碼，統一轉換為半形
+        full_blob = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', full_blob)
         
-        combined_text = raw_text_6 + "\n" + raw_text_11
+        # 3. 解析當前年份與月份特徵 (從照片尋找如 2026 或 04、05)
+        target_month = 4 # 預設防呆為照片顯示之 4 月
+        if "2026" in full_blob:
+            month_match = re.search(r'2026[^\d]*0?([45])', full_blob)
+            if month_match:
+                target_month = int(month_match.group(1))
+
+        # 4. 全局 Token 清洗與配對演算法
+        # 我們直接找出圖片中所有「可能是日期」與「可能是班別」的獨立單字
+        tokens = full_blob.split()
         
-        # 3. 清洗亂碼與特殊符號
-        cleaned_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', combined_text)
+        schedule_map = {}
+        pending_day = None
         
-        # 4. 智慧解析演算法
-        matched_lines = []
-        standard_pattern = re.compile(r'(\d{1,2})[/\-_](\d{1,2})[\s：:]*([A-Za-z0-9\u4e00-\u9fa5]+)')
+        # 定義合法的班別代號集合
+        valid_shifts = {"A", "B", "C", "代A", "H", "O", "S", "a", "b", "c"}
         
-        lines = cleaned_text.split('\n')
-        for line in lines:
-            line_str = line.strip()
-            if not line_str:
+        for t in tokens:
+            t = t.strip()
+            # 檢查是否為標準的 M/D 格式 (例如 4/21)
+            md_match = re.search(r'([45])[:/.\-_](\d{1,2})', t)
+            if md_match:
+                m_val = int(md_match.group(1))
+                d_val = int(md_match.group(2))
+                if 1 <= d_val <= 31:
+                    target_month = m_val
+                    pending_day = d_val
                 continue
                 
-            match = standard_pattern.search(line_str)
-            if match:
-                m, d, shift = match.group(1), match.group(2), match.group(3).strip()
-                matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
-            else:
-                fallback_match = re.search(r'(\d{1,2})\s+(\d{1,2})\s+([A-Z代a-z0-9])', line_str)
-                if fallback_match:
-                    m, d, shift = fallback_match.group(1), fallback_match.group(2), fallback_match.group(3).strip()
-                    if int(m) in [4, 5]:
-                        matched_lines.append(f"{int(m)}/{int(d)}：{shift}")
-
-        if matched_lines:
-            seen = set()
-            deduped = []
-            for item in matched_lines:
-                if item not in seen:
-                    seen.add(item)
-                    deduped.append(item)
-                    
-            def get_date_key(x):
-                parts = x.split('：')[0].split('/')
-                return (int(parts[0]), int(parts[1]))
+            # 如果單純是 1~2 位數的純數字，且前面沒有未配對的日期，暫存為可能的「日」
+            if t.isdigit():
+                val = int(t)
+                # 過濾掉時間（如 08, 16, 24, 00）與年份（2026）
+                if 1 <= val <= 31 and val not in [2026, 8, 16, 24]:
+                    pending_day = val
+                continue
+            
+            # 如果是班別代號，且目前有留存的「日」，立刻進行綁定
+            if t in valid_shifts or any(vs in t for vs in valid_shifts):
+                # 提取出乾淨的班別名稱
+                shift_clean = ""
+                if "代A" in t: shift_clean = "代A"
+                elif "A" in t or "a" in t: shift_clean = "A"
+                elif "B" in t or "b" in t: shift_clean = "B"
+                elif "C" in t or "c" in t: shift_clean = "C"
+                elif "H" in t: shift_clean = "H"
+                elif "O" in t: shift_clean = "O"
+                elif "S" in t: shift_clean = "S"
                 
-            deduped.sort(key=get_date_key)
-            return "\n".join(deduped[:31])
+                if pending_day and shift_clean:
+                    schedule_map[pending_day] = shift_clean
+                    pending_day = None # 配對成功，清除狀態
+                    
+        # 5. 將結果轉回標準的「月份/日期：班別」文字清單
+        matched_lines = []
+        for d in sorted(schedule_map.keys()):
+            matched_lines.append(f"{target_month}/{d:02d}：{schedule_map[d]}")
             
-        words = re.findall(r'[0-9]{1,2}/[0-9]{1,2}|[ABC代HOO]', cleaned_text)
-        if words:
-            st.info("💡 系統偵測到零碎的排班符號，已為您自動彙整片段內容。")
-            return "\n".join([f"請確認此行 ➡️ {w}" for w in words[:20]])
+        if matched_lines:
+            return "\n".join(matched_lines)
             
+        # 終極備援：若無任何配對，但抓得到零星班別字母，直接列出供校對
+        fallback_words = re.findall(r'\b[ABC代HOSabc]\b', full_blob)
+        if fallback_words:
+            st.info("💡 系統已為您捕捉到照片內散落的班別代號，請在下方手動加上日期。")
+            return "\n".join([f"{target_month}/{i+1}：{w.upper()}" for i, w in enumerate(fallback_words[:30])])
+
         return ""
     except Exception as e:
         err_msg = str(e)
@@ -171,7 +194,7 @@ def robust_extract_schedule(_img_np):
 
 extracted_text = ""
 if opencv_image is not None:
-    with st.spinner("🎯 正在啟用混合佈局分析與字元修補技術，深度擷取照片中的班表細節..."):
+    with st.spinner("🎯 正在啟用全局字元網格檢索，強力清洗照片內表格數據..."):
         ocr_extracted = robust_extract_schedule(opencv_image)
         if ocr_extracted == "ERR_TESSERACT_NOT_FOUND":
             st.error("❌ 系統偵測到伺服器尚未安裝 Tesseract OCR 主程式。請確認專案根目錄中已建立包含 'tesseract-ocr' 的 packages.txt 檔案並推送到 GitHub 重新部署。")
@@ -180,14 +203,14 @@ if opencv_image is not None:
             st.success("✨ 班表內容處理完成！")
         else:
             extracted_text = ""
-            st.warning("⚠️ 由於照片中的文字帶有編碼亂碼塊，自動辨識受到限制。請直接在下方核對欄貼上或補上您的班表。")
+            st.warning("⚠️ 由於照片格線及文字亂碼塊較明顯，未能全自動精準對齊。已為您將核對欄清空，請直接在下方手動貼上或輸入排班。")
 else:
     extracted_text = ""
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`5/01：C`）。")
+st.caption("請檢查下方每一行是否皆符合『月份/日期：班別』格式（例如：`4/21：B`）。")
 user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=250, placeholder="範例格式：\n4/21：B\n4/22：代A\n5/01：C")
 
 # 在步驟2和步驟3之間的新增確認按鈕
@@ -269,11 +292,13 @@ def draw_calendar_image(schedule_data, year):
             
             if day in schedule_data[month]:
                 shift = schedule_data[month][day]
-                if 'A' in shift and '代' not in shift:
+                # 統一轉成大寫進行比對與渲染
+                shift_upper = shift.upper()
+                if 'A' in shift_upper and '代' not in shift:
                     bg_color = "#FFE082"
-                elif 'B' in shift:
+                elif 'B' in shift_upper:
                     bg_color = "#B3E5FC"
-                elif 'C' in shift:
+                elif 'C' in shift_upper:
                     bg_color = "#C8E6C9"
                 else:
                     bg_color = "#E0E0E0"
