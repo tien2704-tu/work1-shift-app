@@ -29,11 +29,17 @@ def load_online_font():
 
 font_ttf_path = load_online_font()
 
-# 2. 側邊欄：設定班別與時間對照
-st.sidebar.header("⚙️ 班別時間配置")
+# 2. 側邊欄：設定班別與時間對照 + 強制月份選擇
+st.sidebar.header("⚙️ 班別與週期配置")
 time_A = st.sidebar.text_input("早班 (A)", "08:00 - 16:00")
 time_B = st.sidebar.text_input("中班 / 小夜班 (B)", "16:00 - 24:00")
 time_C = st.sidebar.text_input("夜班 / 大夜班 (C)", "00:00 - 08:00")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 排班週期起點月份")
+# 讓使用者主動手動鎖定月份，徹底解決 OCR 亂跳月分的問題
+target_base_month = st.sidebar.slider("請手動指定上個月是幾月：", min_value=1, max_value=12, value=4, step=1)
+st.sidebar.caption(f"🎯 系統目前已鐵律鎖定週期：\n`{target_base_month}月21日～月底` 加上 `{target_base_month+1 if target_base_month<12 else 1}月1日～20日`")
 
 # 3. 📸 照片上傳功能區
 st.subheader("📸 步驟一：導入班表圖檔")
@@ -87,18 +93,18 @@ if img_file is not None:
     st.image(preview_rgb, caption=f"已調正之班表預覽 ({st.session_state.rotation_angle}°)", use_container_width=True)
 
 
-# 🎯 核心辨識邏輯：強化跨月 21 日與 1-20 日的分水嶺演算法
-def robust_extract_schedule(_img_np):
+# 🎯 核心辨識邏輯：導入手動控制起點與一格內縱向解算
+def robust_extract_schedule(_img_np, base_m):
     try:
         import pytesseract
         
-        # 1. 影像極致預處理：提升黑白對比度以應對縱向格子
+        # 1. 影像極致預處理：強化表格線條內由上到下的文字反差
         gray = cv2.cvtColor(_img_np, cv2.COLOR_BGR2GRAY)
         gray = cv2.medianBlur(gray, 3)
         gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 5)
         
-        # 2. 雙層 OCR 引擎文本融合
+        # 2. 多重 OCR 引擎融合 (使用 PSM 11 專攻結構散落字元)
         pil_img = Image.fromarray(thresh)
         raw_text_6 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 6')
         raw_text_11 = pytesseract.image_to_string(pil_img, lang='chi_tra+eng', config=r'--psm 11')
@@ -106,64 +112,55 @@ def robust_extract_schedule(_img_np):
         full_blob = raw_text_6 + "\n" + raw_text_11
         full_blob = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', full_blob)
         
-        # 3. 合法班別代碼清單
+        # 所有合法班別代碼
         valid_shifts = [
             "AH", "AO", "AS", "BH", "BO", "BS", "CH", "CO", "CS",
             "代A", "代B", "代C", "A", "B", "C", "H", "O", "S"
         ]
-        
-        # 自動偵測年份月份基準
-        base_month = 4
-        if "2026" in full_blob:
-            month_match = re.search(r'2026[^\d]*0?([1-9]|1[0-2])', full_blob)
-            if month_match:
-                base_month = int(month_match.group(1))
 
-        # 4. 精準縱向分水嶺解算邏輯
+        # 3. 縱向 Tokens 網格清洗與「鐵律分水嶺」演算法
         tokens = full_blob.split()
         extracted_data = []
         pending_day = None
         
+        next_m = base_m + 1 if base_m < 12 else 1
+        
         for t in tokens:
             t = t.strip().upper()
             
-            # 有斜線的日期特徵 (如 4/21 或 5/1)
+            # 若包含斜線格式，取出日期數字
             md_match = re.search(r'([0-9]{1,2})[/\-_]([0-9]{1,2})', t)
             if md_match:
-                m_val = int(md_match.group(1))
                 d_val = int(md_match.group(2))
                 if 1 <= d_val <= 31:
                     pending_day = d_val
-                    # 若直接讀到月份就以該月份為主
-                    base_month = m_val
                 continue
             
-            # 純數字特徵 (日期)
+            # 純數字判定
             if t.isdigit():
                 val = int(t)
                 if 1 <= val <= 31 and val not in [2026, 8, 16, 24]:
                     pending_day = val
                 continue
             
-            # 格內由上到下的班別匹配
+            # 格內由上到下匹配代碼
             matched_shift = None
             for vs in valid_shifts:
-                if vs in t or (vs.lower() in t.lower()):
+                if vs == t or vs in t:
                     matched_shift = vs
                     break
             
-            # 💡 核心跨月對齊分水嶺演算法
+            # 💡 鐵律分配邏輯：完全根除 3/1 或 10 號等干擾
             if pending_day and matched_shift:
                 if pending_day >= 21:
-                    # 21號~月底屬於上個月區間
-                    extracted_data.append((base_month, pending_day, matched_shift))
-                else:
-                    # 1號~20號屬於下個月區間
-                    next_month = base_month + 1 if base_month < 12 else 1
-                    extracted_data.append((next_month, pending_day, matched_shift))
-                pending_day = None # 配對成功，釋放等待狀態
+                    # 21～月底：強制歸屬在手選的 base_m (上個月)
+                    extracted_data.append((base_m, pending_day, matched_shift))
+                elif pending_day <= 20:
+                    # 1～20號：強制歸屬在 next_m (下個月)
+                    extracted_data.append((next_m, pending_day, matched_shift))
+                pending_day = None # 釋放狀態
                 
-        # 移除重複項並排序
+        # 移除重複並按日期順序嚴格排序
         unique_data = list(set(extracted_data))
         unique_data.sort(key=lambda x: (x[0], x[1]))
         
@@ -173,7 +170,6 @@ def robust_extract_schedule(_img_np):
             
         if matched_lines:
             return "\n".join(matched_lines)
-            
         return ""
     except Exception as e:
         err_msg = str(e)
@@ -183,23 +179,23 @@ def robust_extract_schedule(_img_np):
 
 extracted_text = ""
 if opencv_image is not None:
-    with st.spinner("🎯 正在依據「21日-月底 + 1日-20日」分水嶺邏輯強力辨識格內排班..."):
-        ocr_extracted = robust_extract_schedule(opencv_image)
+    with st.spinner(f"🎯 正在依據強制週期（{target_base_month}月21日～{target_base_month+1 if target_base_month<12 else 1}月20日）進行格內縱向深度解算..."):
+        ocr_extracted = robust_extract_schedule(opencv_image, target_base_month)
         if ocr_extracted == "ERR_TESSERACT_NOT_FOUND":
             st.error("❌ 系統偵測到伺服器尚未安裝 Tesseract OCR 主程式。請確認專案根目錄中已建立包含 'tesseract-ocr' 的 packages.txt 檔案並推送到 GitHub 重新部署。")
         elif ocr_extracted:
             extracted_text = ocr_extracted
-            st.success("✨ 班表跨月內容處理完成！已補全 21 日至下月 20 日區間。")
+            st.success("✨ 班表跨月內容處理完成！已精準定位指定之跨月區間。")
         else:
             extracted_text = ""
-            st.warning("⚠️ 自動辨識因照片格式受限。已為您清空核對欄，請參照下方格式直接手動修正。")
+            st.warning("⚠️ 自動辨識未能完美捕捉所有格子。已為您清空核對欄，請直接參考下方格式手動修正或貼上。")
 else:
     extracted_text = ""
 
 # 4. 📝 步驟二：純文字班表確認與核對區
 st.markdown("---")
 st.subheader("📝 步驟二：系統辨識結果核對與人工修正")
-st.caption("請檢查或手動修正下方文字，確保涵蓋「上月 21~月底」與「本月 1~20 日」。")
+st.caption(f"請檢查或手動補正排班文字。目前系統將精準繪製 {target_base_month}月21日~月底 與 下月1日~20日。")
 user_input = st.text_area("排班原始文字核對欄：", value=extracted_text, height=280, placeholder="範例格式：\n4/21：B\n4/30：CH\n5/01：A\n5/14：代A\n5/20：O")
 
 # 確認按鈕
@@ -258,11 +254,9 @@ def draw_calendar_image(schedule_data, year):
 
     y_offset = 175
     
-    # 依月份順序渲染繪製
     for month in sorted(schedule_data.keys()):
         draw.rectangle([(35, y_offset), (585, y_offset + 25)], fill="#E8E8ED")
         
-        # 自動識別此月份在排班表中的角色
         has_late_days = any(d >= 21 for d in schedule_data[month].keys())
         range_str = " (21日 ─ 月底)" if has_late_days else " (01日 ─ 20日)"
             
@@ -289,7 +283,7 @@ def draw_calendar_image(schedule_data, year):
             box_x2 = box_x1 + 72
             box_y2 = box_y1 + 52
             
-            # 嚴格控制只繪製指定循環區間內的格子
+            # 嚴格且完美地只繪製指定循環區間內的格子
             should_draw = False
             if has_late_days and day >= 21:
                 should_draw = True
@@ -304,7 +298,7 @@ def draw_calendar_image(schedule_data, year):
                     shift = schedule_data[month][day].strip()
                     s_upper = shift.upper()
                     
-                    # 精準色彩代碼比對機制
+                    # 精準色彩代碼比對
                     if s_upper in ["AH", "AO", "AS"]:    # 早班加班
                         bg_color = "#FFB74D" 
                     elif s_upper in ["BH", "BO", "BS"]:  # 中班加班
@@ -344,16 +338,16 @@ if st.session_state.step2_confirmed:
                 generated_img.save(img_buffer, format="PNG")
                 img_bytes = img_buffer.getvalue()
                 
-                st.image(img_bytes, caption="這是依據 21日-月底 與 1日-20日 跨月循環產出的看板", use_container_width=True)
+                st.image(img_bytes, caption=f"已成功產出指定的跨月（{target_base_month}月21日~下月20日）排班圖檔", use_container_width=True)
                 st.download_button(
                     label="📥 點此下載排班月行事曆 PNG 圖檔",
                     data=img_bytes,
-                    file_name=f"排班行事曆_分水嶺修正_{year_val}年.png",
+                    file_name=f"排班行事曆_{target_base_month}月21日至下月20日.png",
                     mime="image/png"
                 )
             else:
-                st.error("輸入內容無法解析，請檢查格式是否包含例如 '4/21：B' 的字樣。")
+                st.error("輸入內容無法解析，請確認是否有包含格式如 '4/21：B' 的字樣。")
         except Exception as e:
             st.error(f"行事曆生成失敗: {e}")
     else:
-        st.warning("請先在步驟二的核對欄內確認或輸入您的排班資料。")
+        st.warning("請先在步驟二的核對欄內確認或手動輸入您的排班資料。")
