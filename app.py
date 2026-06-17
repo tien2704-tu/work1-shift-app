@@ -13,6 +13,7 @@ import urllib.request
 st.set_page_config(page_title="技術處化驗科排班看板", page_icon="🧪", layout="centered")
 
 st.title("🧪 技術處化驗科 ─ 個人排班月行事曆")
+st.write("已修正【公A】與【代A】的辨識膠合邏輯。系統將精準鎖定工號【26811】的數據流。")
 
 # 安全下載中文字型機制
 @st.cache_resource
@@ -159,7 +160,7 @@ def robust_extract_id_schedule(_img_np, base_m, last_m_days):
 ocr_data_dict = {}
 found_id = False
 if opencv_image is not None:
-    with st.spinner(f"🔍 "):
+    with st.spinner(f"🔍 正在重新交叉比對【公A】與【代A】特徵流..."):
         ocr_data_dict, found_id = robust_extract_id_schedule(opencv_image, target_base_month, last_month_total_days)
         if found_id:
             st.success("🎯 工號【26811】定位成功！【公A】與【代A】已精準校正歸位。")
