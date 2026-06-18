@@ -1,218 +1,186 @@
 import streamlit as st
-import numpy as np
+import os
+from PIL import Image
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
+from typing import List
 import pandas as pd
-import re
+import json
+
+# 引入繪圖與時間處理套件
+import matplotlib.pyplot as plt
 import calendar
 from datetime import datetime
-import easyocr
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from PIL import Image
-import io
+from io import BytesIO
 
-# 1. 設定 Streamlit 頁面網頁標題與佈局
-st.set_page_config(
-    page_title="Excel 班表轉月行事曆工具", 
-    page_icon="📅",
-    layout="centered"
-)
+# ==================== 1. 定義資料結構 ====================
+class DailySchedule(BaseModel):
+    date: str = Field(description="日期，格式必須為 'MM/DD'，例如 '04/21' 或 '05/10'")
+    shift: str = Field(description="班別代號，例如 B, C, O, 代A, H")
 
-# 2. 設定繪圖字體（解決雲端 Linux 伺服器中文變豆腐方塊的問題）
-import matplotlib as mpl
-# 優先載入中文字體，若伺服器無此字體，會自動映射至標準無襯線字體
-mpl.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'Microsoft JhengHei', 'SimHei'] 
-mpl.rcParams['axes.unicode_minus'] = False
+class EmployeeSchedule(BaseModel):
+    name: str = Field(description="員工姓名")
+    emp_id: str = Field(description="工號")
+    group: str = Field(description="組別")
+    schedules: List[DailySchedule] = Field(description="每日班表清單")
 
-# -------------------------------------------------------------------------
-# 核心快取：避免網頁每次操作都重新載入 OCR 模型（可大幅提升運行速度）
-# -------------------------------------------------------------------------
-@st.cache_resource
-def load_ocr_reader():
-    # 支援繁體中文 (ch_tra) 與英文 (en)
-    return easyocr.Reader(['ch_tra', 'en'])
+class RosterExtraction(BaseModel):
+    company: str = Field(description="公司與廠區名稱")
+    month: str = Field(description="班表月份主要月份，例如 '2026年度05月份'")
+    extracted_data: List[EmployeeSchedule] = Field(description="所有員工班表資料")
 
-reader = load_ocr_reader()
 
-# -------------------------------------------------------------------------
-# 邏輯一：圖片文字辨識與班表結構化
-# -------------------------------------------------------------------------
-def parse_schedule_image(image_bytes):
-    # 將上傳的檔案流轉為圖像矩陣
-    image = Image.open(io.BytesIO(image_bytes))
-    img_array = np.array(image)
-    
-    # 執行辨識
-    result = reader.readtext(img_array)
-    detected_texts = [res[1] for res in result]
-    all_text = " ".join(detected_texts)
-    
-    # 預設目前的年份與月份
-    year = datetime.now().year
-    month = datetime.now().month
-    
-    # 嘗試用正規表示法自動抓取圖片中的「年/月」
-    month_match = re.search(r'(\d{4})[年/-](\d{1,2})', all_text)
-    if month_match:
-        year = int(month_match.group(1))
-        month = int(month_match.group(2))
-    else:
-        single_month = re.search(r'(\d{1,2})\s*月', all_text)
-        if single_month:
-            month = int(single_month.group(1))
-            
-    schedule_dict = {}
-    # 設定常見的排班關鍵字
-    shift_keywords = ['常日', '常', '小夜', '夜', '大夜', '休', 'W', 'N', 'D', 'O']
-    current_date = None
-    
-    # 簡單線性配對邏輯：抓到日期(1~31)後，若下一個字串包含關鍵字，則進行綁定
-    for text in detected_texts:
-        text = text.strip()
-        if text.isdigit() and 1 <= int(text) <= 31:
-            current_date = int(text)
-        elif current_date and any(kw in text for kw in shift_keywords):
-            schedule_dict[current_date] = text
-            current_date = None  # 配對成功，重置等待下一個日期
-            
-    # 保底機制：若 OCR 因截圖模糊未抓到任何資料，生成一組標準展示資料，避免畫面空白
-    is_mock = False
-    if not schedule_dict:
-        is_mock = True
-        for d in range(1, 32):
-            if d % 7 in [6, 0]: schedule_dict[d] = "休"
-            elif d % 3 == 0: schedule_dict[d] = "小夜"
-            else: schedule_dict[d] = "常日"
-            
-    return year, month, schedule_dict, is_mock
+# ==================== 2. 核心功能：繪製月行事曆照片 ====================
+def generate_calendar_image(year, month, target_name, schedule_dict):
+    """
+    根據指定的年份、月份與該員工的班表字典，畫出月曆並轉成 PNG 圖片位元組
+    """
+    # 設定 matplotlib 支援中文（Streamlit 雲端預設字型可能無中文，改用簡單粗體線條或防呆處理）
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial'] 
+    plt.rcParams['axes.unicode_minus'] = False
 
-# -------------------------------------------------------------------------
-# 邏輯二：利用 Matplotlib 繪製精美月曆圖
-# -------------------------------------------------------------------------
-def generate_calendar_image(year, month, schedule_dict):
-    # 計算該月第一天是星期幾(0=星期一)，以及該月總天數
-    first_weekday, num_days = calendar.monthrange(year, month)
-    first_weekday = (first_weekday + 1) % 7 # 修正為 0=星期日
+    # 取得該月的天數與第一天是星期幾
+    cal = calendar.monthcalendar(year, month)
     
-    total_slots = first_weekday + num_days
-    num_weeks = (total_slots + 6) // 7
-    
-    # 動態調整畫布高度，確保比例完美
-    fig, ax = plt.subplots(figsize=(10, 2 + num_weeks * 1.5), dpi=150)
-    ax.set_xlim(0, 7)
-    ax.set_ylim(0, num_weeks + 1)
+    # 建立畫布
+    fig, ax = plt.subplots(figsize=(10, 8), dpi=150)
     ax.axis('off')
-    
-    # 視覺風格色彩定義
-    bg_color = "#FAFAFA"
-    header_color = "#3A4750"
-    grid_border_color = "#E0E0E0"
-    
-    color_map = {
-        "休": {"bg": "#EAEAEA", "text": "#888888"},
-        "常日": {"bg": "#E8F4F8", "text": "#1E6B7B"},
-        "小夜": {"bg": "#FFF4E0", "text": "#B27000"},
-        "大夜": {"bg": "#F5EFFF", "text": "#623697"}
-    }
-    
-    fig.patch.set_facecolor(bg_color)
-    
-    # 1. 繪製主標題
-    ax.text(3.5, num_weeks + 0.6, f"{year} 年 {month} 月 行事曆班表", 
-            fontsize=18, fontweight='bold', ha='center', va='center', color=header_color)
-    
-    # 2. 繪製星期欄位 (日 到 六)
-    weekdays = ['日', '一', '二', '三', '四', '五', '六']
-    for i, day in enumerate(weekdays):
-        txt_color = "#D32F2F" if i in [0, 6] else "#333333"
-        ax.text(i + 0.5, num_weeks + 0.1, day, fontsize=12, fontweight='bold', ha='center', va='center', color=txt_color)
-        ax.plot([i, i+1], [num_weeks, num_weeks], color=header_color, linewidth=1.5)
+    ax.set_title(f"{year}年 {month}月 - {target_name} 個任班表", fontsize=18, weight='bold', pad=20)
 
-    # 3. 依序填入日期格與班表內容
-    day_counter = 1
-    for week in range(num_weeks):
-        row_idx = num_weeks - 1 - week  # 座標由下而上繪製
-        for idx in range(7):
-            # 判斷是否為邊界外的空白格子
-            if (week == 0 and idx < first_weekday) or day_counter > num_days:
-                rect = patches.Rectangle((idx, row_idx), 1, 1, linewidth=0.5, edgecolor=grid_border_color, facecolor='none')
-                ax.add_patch(rect)
-                continue
-            
-            shift = schedule_dict.get(day_counter, "")
-            face_color = "#FFFFFF"
-            text_color = "#222222"
-            
-            # 對應排班色彩
-            for key, style in color_map.items():
-                if key in shift:
-                    face_color = style["bg"]
-                    text_color = style["text"]
-                    break
-            
-            # 週末加強著色 (若為休假或空值)
-            if idx in [0, 6] and (shift == "" or "休" in shift):
-                face_color = "#FFF0F0"
-                if shift == "": shift = "休"
-                text_color = "#C62828"
+    # 畫星期欄位標頭
+    weeks = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    for i, w in enumerate(weeks):
+        ax.text(i + 0.5, len(cal) + 0.5, w, ha='center', va='center', fontsize=12, weight='bold', bbox=dict(boxstyle='square', facecolor='#e0e0e0', edgecolor='none'))
 
-            # 畫方塊
-            rect = patches.Rectangle((idx, row_idx), 1, 1, linewidth=0.8, edgecolor=grid_border_color, facecolor=face_color)
+    # 填入日期與班表
+    for r, week in enumerate(cal):
+        for c, day in enumerate(week):
+            # 計算網格 Y 軸位置（由上往下）
+            y_pos = len(cal) - r - 0.5
+            x_pos = c + 0.5
+            
+            # 畫格子外框
+            rect = plt.Rectangle((c, len(cal) - r - 1), 1, 1, fill=False, edgecolor='#cccccc', linewidth=1)
             ax.add_patch(rect)
             
-            # 填入左上角日期
-            ax.text(idx + 0.1, row_idx + 0.75, str(day_counter), fontsize=11, fontweight='bold', ha='left', va='center', color="#555555")
-            
-            # 填入中央班表代碼
-            if shift:
-                ax.text(idx + 0.5, row_idx + 0.35, shift, fontsize=13, fontweight='bold', ha='center', va='center', color=text_color)
-            
-            day_counter += 1
+            if day != 0:
+                # 顯示日期數字（右上角）
+                ax.text(c + 0.85, y_pos + 0.35, str(day), ha='center', va='center', fontsize=10, color='#666666')
+                
+                # 比對班表字典裡有沒有這天的班
+                date_str = f"{str(month).zfill(2)}/{str(day).zfill(2)}"
+                if date_str in schedule_dict:
+                    shift_text = schedule_dict[date_str]
+                    
+                    # 根據班別給予不同顏色外觀
+                    color_map = {
+                        'H': '#ffcccc', 'O': '#f0f0f0', 'B': '#ccffcc', 
+                        'C': '#ffe5cc', '代A': '#cce5ff', '公A': '#e5ccff'
+                    }
+                    face_color = color_map.get(shift_text, '#ffffff')
+                    
+                    # 在格子內畫出班別底色區塊與文字
+                    box = plt.Rectangle((c+0.05, len(cal) - r - 0.9), 0.9, 0.6, fill=True, facecolor=face_color, edgecolor='none', alpha=0.7)
+                    ax.add_patch(box)
+                    ax.text(x_pos, y_pos - 0.1, shift_text, ha='center', va='center', fontsize=14, weight='bold')
 
-    plt.tight_layout()
+    ax.set_xlim(0, 7)
+    ax.set_ylim(0, len(cal) + 1)
     
-    # 將圖片轉換為記憶體流 (BytesIO)，以便 Streamlit 直接讀取下載，不需儲存在伺服器硬碟
-    img_buf = io.BytesIO()
-    plt.savefig(img_buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none')
+    # 將圖片存入記憶體快取，不佔用實體硬碟空間
+    img_buf = BytesIO()
+    plt.savefig(img_buf, format='png', bbox_inches='tight')
     img_buf.seek(0)
     plt.close()
     return img_buf
 
-# -------------------------------------------------------------------------
-# 介面渲染 (Streamlit 網頁前端)
-# -------------------------------------------------------------------------
-st.title("📅 Excel 班表截圖轉月行事曆")
-st.markdown("不用安裝任何程式！直接上傳您的 Excel 班表截圖，系統將自動分析文字並繪製成色彩清晰、方便閱讀的月曆圖檔。")
 
-# 建立檔案上傳區塊
-uploaded_file = st.file_uploader("請上傳班表圖片檔 (支援 PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
+# ==================== 3. Streamlit 網頁介面 ====================
+st.set_page_config(page_title="AI 班表行事曆生成器", layout="wide")
 
-if uploaded_file is not None:
-    # 呈現使用者上傳的原始圖片
-    st.image(uploaded_file, caption="📸 您上傳的班表截圖", use_container_width=True)
+st.title("📊 智慧班表照片 ➡️ 月行事曆照片生成系統")
+st.subheader("功能：1. 智慧照片辨識 | 2. 彙整成月曆照片並提供下載")
+
+# 側邊欄設定
+st.sidebar.header("🔑 系統設定")
+api_key = st.sidebar.text_input("請輸入您的 Gemini API Key", type="password")
+st.sidebar.markdown("[👉 點此免費獲取 API Key](https://aistudio.google.com/)")
+
+# 功能一：上傳照片辨識
+st.markdown("### 📥 功能一：上傳班表照片")
+uploaded_file = st.file_uploader("請上傳您的班表照片 (JPG 或 PNG)", type=["jpg", "jpeg", "png"])
+
+if uploaded_file and api_key:
+    image = Image.open(uploaded_file)
     
-    # 觸發辨識與生成的按鈕
-    if st.button("🚀 開始自動辨識與轉換"):
-        with st.spinner("雲端 AI 正在分析圖片並繪製月曆中，請稍候..."):
-            file_bytes = uploaded_file.read()
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.image(image, caption="您上傳的班表原圖", use_container_width=True)
+        
+    with col2:
+        st.write("⏳ AI 正在深度解讀班表格子與手寫字，請稍候...")
+        
+        try:
+            client = genai.Client(api_key=api_key)
             
-            # 1. 執行 OCR 解析
-            year, month, schedule, is_mock = parse_schedule_image(file_bytes)
+            prompt = """
+            你是一個專業的工廠班表數據提取專家。請仔細分析這張班表圖片：
+            1. 識別月份與公司標頭（例如 2026年度05月份）。
+            2. 對齊橫軸日期（4/21~4/30 欄位與 5/1~5/20 欄位）與縱軸員工。
+            3. 日期格式請務必統一整理轉換為 'MM/DD'（例如 4月21日請寫 '04/21'，5月5日請寫 '05/05'）。
+            4. 優先識別藍色原子筆手寫的假別異動（例如 公A、代A）。
+            5. 完全依照 JSON Schema 格式輸出。
+            """
             
-            if is_mock:
-                st.warning("⚠️ 系統未能完美辨識出班表排列，以下為您產出標準示範排班圖。您可以確認截圖是否清晰或欄位是否包含『常日、小夜、大夜、休』等關鍵字。")
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[image, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=RosterExtraction,
+                    temperature=0.1,
+                ),
+            )
             
-            # 2. 產出月曆圖片流
-            output_img_buf = generate_calendar_image(year, month, schedule)
+            result_json = json.loads(response.text)
+            st.success(f"✅ 辨識成功！廠區：{result_json['company']} ({result_json['month']})")
             
-            # 3. 網頁上渲染產出的月曆結果
+            # --- 轉成 DataFrame 網頁檢視 ---
+            employee_names = [emp['name'] for emp in result_json['extracted_data']]
+            
+            # 功能二：選擇員工並彙整成月行事曆照片
             st.markdown("---")
-            st.subheader("🎉 轉換成功！您的專屬月行事曆：")
-            st.image(output_img_buf, caption=f"{year}年{month}月 個人作息圖", use_container_width=True)
+            st.markdown("### 📅 功能二：彙整個人月行事曆照片")
             
-            # 4. 提供一鍵下載按鈕
+            selected_emp = st.selectbox("請選擇您的名字以生成專屬月曆：", employee_names)
+            
+            # 找到該員工的班表數據
+            emp_data = next(emp for emp in result_json['extracted_data'] if emp['name'] == selected_emp)
+            
+            # 建立日曆比對字典 {"05/06": "公A", "05/07": "公A"}
+            schedule_dict = {day['date']: day['shift'] for day in emp_data['schedules']}
+            
+            # 目前這張班表涵蓋 2026 年的 4 月與 5 月，讓使用者選擇要下載哪個月的行事曆照片
+            target_month = st.radio("請選擇欲生成的月份行事曆照片：", [4, 5], horizontal=True)
+            
+            # 繪製並生成圖片快取
+            with st.spinner("正在為您繪製月曆照片..."):
+                calendar_img_buf = generate_calendar_image(2026, target_month, selected_emp, schedule_dict)
+                
+            # 在網頁上預覽產出的月曆照片
+            st.image(calendar_img_buf, caption=f"{selected_emp} - 2026年{target_month}月 行事曆預覽", use_container_width=True)
+            
+            # 提供照片格式 (PNG) 下載按鈕
             st.download_button(
-                label="💾 下載這張月曆圖片 (PNG)",
-                data=output_img_buf,
-                file_name=f"{year}年{month}月_個人行事曆.png",
+                label=f"🖼️ 下載 {selected_emp} 的 {target_month}月份行事曆照片 (PNG)",
+                data=calendar_img_buf,
+                file_name=f"{selected_emp}_2026_{target_month}月行事曆.png",
                 mime="image/png"
             )
+            
+        except Exception as e:
+            st.error(f"系統發生異常：{str(e)}")
+
+elif not api_key:
+    st.warning("👈 請先在左側邊欄輸入您的 Gemini API Key 才能開啟服務喔！")
