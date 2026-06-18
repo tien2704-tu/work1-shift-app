@@ -1,3 +1,2 @@
 openpyxl
-pillow
-opencv-python-headless
+requests
