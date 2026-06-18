@@ -1,5 +1,2 @@
-google-genai
+openpyxl
 pillow
-pandas
-pydantic
-matplotlib
